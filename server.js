@@ -3,6 +3,7 @@ const cors = require('cors');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const admin = require('firebase-admin');
+const { getFirestore } = require('firebase-admin/firestore');
 require('dotenv').config();
 
 const app = express();
@@ -24,10 +25,11 @@ let db;
 try {
     // ดึง Service Account Key มาใช้งาน (ใช้ Secret File บน Render)
     const serviceAccount = require('./serviceAccountKey.json');
-    admin.initializeApp({
+    const firebaseApp = admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
-    db = admin.firestore();
+    // 🌟 ชี้เป้าหมายไปที่ฐานข้อมูลชื่อ "store" ที่คุณเพิ่งสร้าง
+    db = getFirestore(firebaseApp, "store");
 } catch (error) {
     console.error("⚠️ FATAL ERROR: ไม่พบไฟล์ serviceAccountKey.json ในระบบของ Render");
     process.exit(1); // บังคับหยุดการทำงานถ้าไม่มีกุญแจฐานข้อมูล
