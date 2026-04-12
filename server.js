@@ -7,6 +7,9 @@ const { getFirestore } = require('firebase-admin/firestore');
 const os = require('os');
 const fs = require('fs');
 const AppInfoParser = require('app-info-parser');
+const path = require('path');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
 require('dotenv').config();
 
 const app = express();
