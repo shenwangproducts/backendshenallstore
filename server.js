@@ -100,7 +100,7 @@ app.post('/api/oauth/callback', async (req, res) => {
                 client_id: process.env.CHATCHAT_CLIENT_ID,
                 client_secret: process.env.CHATCHAT_CLIENT_SECRET,
                 code: code,
-                redirect_uri: redirect_uri
+                redirect_uri: process.env.CHATCHAT_REDIRECT_URI || redirect_uri
             })
         });
 
