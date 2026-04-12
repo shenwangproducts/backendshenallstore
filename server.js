@@ -68,18 +68,27 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     }
 });
 
-// 🌟 API สำหรับรับไฟล์ APK -> แกะซอร์สโค้ด -> สแกนไวรัส -> อัปโหลดขึ้น Cloud (ของจริง 100%)
-app.post('/api/scan-apk', uploadDisk.single('apk'), async (req, res) => {
-    try {
-        if (!req.file) return res.status(400).json({ error: 'ไม่พบไฟล์ APK/AAB' });
+// 🌟 API 1: สำหรับอัปโหลดไฟล์ APK ไปพักไว้ที่ Server (แบบแยกขั้นตอนเพื่อลดปัญหา Timeout)
+app.post('/api/upload-apk', uploadDisk.single('apk'), (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'ไม่พบไฟล์ APK/AAB' });
+    res.json({ success: true, filePath: req.file.path, originalname: req.file.originalname, size: req.file.size });
+});
 
-        const declaredIap = parseInt(req.body.declaredIap || 0); // 🌟 รับข้อมูลเปอร์เซ็นต์ที่ผู้ใช้กรอก
+// 🌟 API 2: สำหรับสแกนไวรัส -> แกะซอร์สโค้ด -> อัปโหลดขึ้น Cloudinary
+app.post('/api/scan-apk', async (req, res) => {
+    try {
+        const { filePath, originalname, size, declaredIap } = req.body;
+        if (!filePath || !fs.existsSync(filePath)) {
+            return res.status(400).json({ error: 'ไม่พบไฟล์บนเซิร์ฟเวอร์ กรุณาอัปโหลดใหม่' });
+        }
+
+        const iapValue = parseInt(declaredIap || 0); // 🌟 รับข้อมูลเปอร์เซ็นต์ที่ผู้ใช้กรอก
         let logs = [];
-        logs.push(`[System] ได้รับไฟล์: ${req.file.originalname}`);
+        logs.push(`[System] เริ่มกระบวนการสแกนไฟล์: ${originalname}`);
         logs.push(`[Scan] กำลังแกะไฟล์และวิเคราะห์ AndroidManifest.xml...`);
 
         // 1. แกะซอร์สโค้ดเพื่ออ่านข้อมูลของจริง!
-        const parser = new AppInfoParser(req.file.path);
+        const parser = new AppInfoParser(filePath);
         const appInfo = await parser.parse();
 
         logs.push(`[Info] Package Name จริง: ${appInfo.package}`);
@@ -109,17 +118,17 @@ app.post('/api/scan-apk', uploadDisk.single('apk'), async (req, res) => {
         
         const hasBilling = permissions.some(p => iapPermissions.includes(p.name));
         
-        let finalIapFee = declaredIap;
+        let finalIapFee = iapValue;
         let penalty = 0;
 
         if (hasBilling) {
             logs.push(`[AI Scan] ⚠️ ตรวจพบสิทธิ์การชำระเงิน (In-App Purchases) จากไฟล์ APK จริง`);
             
-            if (declaredIap < 20) {
+            if (iapValue < 20) {
                 // คำนวณค่าปรับ 3-9% จากจำนวนสิทธิ์การเข้าถึง (อ้างอิงความซับซ้อนของแอปจริง ไม่ใช้การสุ่ม)
                 penalty = (permissions.length % 7) + 3; 
                 finalIapFee = 20 + penalty;
-                logs.push(`[Alert] 🚨 ตรวจพบการแจ้งข้อมูลไม่ตรงความเป็นจริง! (คุณแจ้ง ${declaredIap}% แต่ความจริงคือต้องหัก 20%)`);
+                logs.push(`[Alert] 🚨 ตรวจพบการแจ้งข้อมูลไม่ตรงความเป็นจริง! (คุณแจ้ง ${iapValue}% แต่ความจริงคือต้องหัก 20%)`);
                 logs.push(`[Penalty] ระบบทำการปรับเพิ่มค่าปรับการโกหก ${penalty}% รวมหักส่วนแบ่งใหม่ทั้งหมดเป็น ${finalIapFee}% ทันที!`);
             } else {
                 logs.push(`[Success] ข้อมูลระบบชำระเงินตรงกับที่นักพัฒนาแจ้งไว้`);
@@ -130,7 +139,7 @@ app.post('/api/scan-apk', uploadDisk.single('apk'), async (req, res) => {
 
         // 🌟 3. ระบบคัดแยกไฟล์ (ABI / Architecture Splitter) สำหรับ Universal APK
         logs.push(`[System] กำลังวิเคราะห์สถาปัตยกรรม (Architecture) ของไฟล์...`);
-        const fileNameLower = req.file.originalname.toLowerCase();
+        const fileNameLower = originalname.toLowerCase();
         let abis = ['armeabi-v7a (32-bit)', 'arm64-v8a (64-bit)'];
         
         if (fileNameLower.includes('universal') || fileNameLower.includes('emu') || fileNameLower.includes('x86')) {
@@ -144,22 +153,22 @@ app.post('/api/scan-apk', uploadDisk.single('apk'), async (req, res) => {
 
         // 4. อัปโหลดไฟล์ APK จริงขึ้น Cloudinary (เก็บเป็นไฟล์ดิบ raw)
         logs.push(`[Upload] กำลังย้ายไฟล์ติดตั้งขึ้นสู่ระบบ Cloud...`);
-        const uploadResult = await cloudinary.uploader.upload(req.file.path, { resource_type: 'raw' });
+        const uploadResult = await cloudinary.uploader.upload(filePath, { resource_type: 'raw' });
 
-        fs.unlinkSync(req.file.path); // แกะเสร็จแล้วลบไฟล์ชั่วคราวทิ้ง
+        fs.unlinkSync(filePath); // แกะเสร็จแล้วลบไฟล์ชั่วคราวทิ้ง
         res.json({ 
             success: true, 
             logs, 
             appInfo: { package: appInfo.package }, 
             apkUrl: uploadResult.secure_url, 
-            apkSize: req.file.size,
+            apkSize: size,
             finalIapFee,
             penalty
         });
     } catch (error) {
         console.error(error);
-        if (req.file) fs.unlinkSync(req.file.path);
-        res.status(500).json({ error: 'Decompile failed: ไฟล์อาจไม่ใช่ APK ที่ถูกต้อง' });
+        if (req.body.filePath && fs.existsSync(req.body.filePath)) fs.unlinkSync(req.body.filePath);
+        res.status(500).json({ error: 'Decompile failed: ไฟล์อาจไม่ใช่ APK ที่ถูกต้อง หรือเกิดข้อผิดพลาดในการประมวลผล' });
     }
 });
 
