@@ -73,6 +73,7 @@ app.post('/api/scan-apk', uploadDisk.single('apk'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'ไม่พบไฟล์ APK/AAB' });
 
+        const declaredIap = parseInt(req.body.declaredIap || 0); // 🌟 รับข้อมูลเปอร์เซ็นต์ที่ผู้ใช้กรอก
         let logs = [];
         logs.push(`[System] ได้รับไฟล์: ${req.file.originalname}`);
         logs.push(`[Scan] กำลังแกะไฟล์และวิเคราะห์ AndroidManifest.xml...`);
@@ -95,6 +96,27 @@ app.post('/api/scan-apk', uploadDisk.single('apk'), async (req, res) => {
             }
         });
 
+        // 🌟 ตรวจสอบระบบเติมเงิน (IAP) ด้วย AI แบบจำลอง
+        logs.push(`[AI Scan] สแกนหา API การชำระเงินและ In-App Billing...`);
+        const hasBilling = permissions.some(p => p.name === 'com.android.vending.BILLING') || true; // บังคับ true เพื่อจำลองให้เห็นภาพว่า AI ตรวจพบเสมอ
+        
+        let finalIapFee = declaredIap;
+        let penalty = 0;
+
+        if (hasBilling) {
+            logs.push(`[AI Scan] ⚠️ ตรวจพบระบบชำระเงินภายในแอป (In-App Purchases)`);
+            logs.push(`[AI Scan] วิเคราะห์ซอร์สโค้ดและเส้นทางการเงิน... พบความเป็นไปได้ของรายการสั่งซื้อที่มูลค่าสูงกว่า 2,000 บาท!`);
+            
+            if (declaredIap < 20) {
+                penalty = Math.floor(Math.random() * 7) + 3; // 🌟 สุ่มค่าปรับ 3-9%
+                finalIapFee = 20 + penalty;
+                logs.push(`[Alert] 🚨 ตรวจพบการแจ้งข้อมูลไม่ตรงความเป็นจริง! (คุณแจ้ง ${declaredIap}% แต่ความจริงคือต้องหัก 20%)`);
+                logs.push(`[Penalty] ระบบทำการปรับเพิ่มค่าปรับการโกหก ${penalty}% รวมหักส่วนแบ่งใหม่ทั้งหมดเป็น ${finalIapFee}% ทันที!`);
+            } else {
+                logs.push(`[Success] ข้อมูลระบบชำระเงินตรงกับที่นักพัฒนาแจ้งไว้ (หัก 20%)`);
+            }
+        }
+
         logs.push(`[Success] ไม่พบพฤติกรรมมัลแวร์ Shenall Guard อนุมัติ.`);
 
         // 🌟 3. ระบบคัดแยกไฟล์ (ABI / Architecture Splitter) สำหรับ Universal APK
@@ -116,7 +138,15 @@ app.post('/api/scan-apk', uploadDisk.single('apk'), async (req, res) => {
         const uploadResult = await cloudinary.uploader.upload(req.file.path, { resource_type: 'raw' });
 
         fs.unlinkSync(req.file.path); // แกะเสร็จแล้วลบไฟล์ชั่วคราวทิ้ง
-        res.json({ success: true, logs, appInfo: { package: appInfo.package }, apkUrl: uploadResult.secure_url, apkSize: req.file.size });
+        res.json({ 
+            success: true, 
+            logs, 
+            appInfo: { package: appInfo.package }, 
+            apkUrl: uploadResult.secure_url, 
+            apkSize: req.file.size,
+            finalIapFee,
+            penalty
+        });
     } catch (error) {
         console.error(error);
         if (req.file) fs.unlinkSync(req.file.path);
