@@ -52,52 +52,58 @@ const diskStorage = multer.diskStorage({
 });
 const uploadDisk = multer({ storage: diskStorage });
 
-// API สำหรับรับไฟล์และอัปโหลดขึ้น Cloudinary
-app.post('/api/upload', upload.single('file'), async (req, res) => {
+// 🌟 API 1: ออกใบอนุญาต (Signature) ให้หน้าเว็บอัปโหลดไฟล์ตรงไปที่ Cloudinary (Direct Upload)
+app.get('/api/cloudinary-sign', (req, res) => {
     try {
-        const resourceType = req.body.resourceType || 'auto';
-        // สร้าง Buffer ของไฟล์ให้กลายเป็น Base64 เพื่อส่งให้ Cloudinary
-        const b64 = Buffer.from(req.file.buffer).toString('base64');
-        let dataURI = "data:" + req.file.mimetype + ";base64," + b64;
-        
-        const result = await cloudinary.uploader.upload(dataURI, {
-            resource_type: resourceType
+        const timestamp = Math.round((new Date).getTime() / 1000);
+        const signature = cloudinary.utils.api_sign_request({
+            timestamp: timestamp
+        }, process.env.CLOUDINARY_API_SECRET);
+
+        res.json({
+            timestamp,
+            signature,
+            cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+            apiKey: process.env.CLOUDINARY_API_KEY
         });
-        
-        res.json({ url: result.secure_url });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Upload failed' });
+        console.error('Signature Error:', error);
+        res.status(500).json({ error: 'Failed to generate signature' });
     }
 });
 
-// 🌟 API 1: สำหรับอัปโหลดไฟล์ APK ไปพักไว้ที่ Server (แบบแยกขั้นตอนเพื่อลดปัญหา Timeout)
-app.post('/api/upload-apk', uploadDisk.single('apk'), (req, res) => {
-    if (!req.file) return res.status(400).json({ error: 'ไม่พบไฟล์ APK/AAB' });
-    res.json({ success: true, filePath: req.file.path, originalname: req.file.originalname, size: req.file.size });
-});
-
-// 🌟 API 2: สำหรับสแกนไวรัส -> แกะซอร์สโค้ด -> อัปโหลดขึ้น Cloudinary
+// 🌟 API 2: สำหรับให้ AI ดาวน์โหลดไฟล์จาก Cloudinary มาสแกน
 app.post('/api/scan-apk', async (req, res) => {
+    let tmpFilePath = null;
     try {
-        const { filePath, originalname, size, declaredIap } = req.body;
-        if (!filePath || !fs.existsSync(filePath)) {
-            return res.status(400).json({ error: 'ไม่พบไฟล์บนเซิร์ฟเวอร์ กรุณาอัปโหลดใหม่' });
+        const { apkUrl, originalname, size, declaredIap } = req.body;
+        if (!apkUrl) {
+            return res.status(400).json({ error: 'ไม่พบ URL ของไฟล์ APK ที่อัปโหลด' });
         }
 
         const iapValue = parseInt(declaredIap || 0); // 🌟 รับข้อมูลเปอร์เซ็นต์ที่ผู้ใช้กรอก
         let logs = [];
         logs.push(`[System] เริ่มกระบวนการสแกนไฟล์: ${originalname}`);
+        logs.push(`[Download] เซิร์ฟเวอร์กำลังดึงไฟล์จาก Cloud เพื่อตรวจสอบ...`);
+
+        // 1. โหลดไฟล์ APK จาก Cloudinary ลงมาสแกนใน Temp Folder
+        tmpFilePath = path.join(os.tmpdir(), Date.now() + '-' + originalname);
+        const response = await fetch(apkUrl);
+        if (!response.ok) throw new Error(`ไม่สามารถโหลดไฟล์ได้: ${response.statusText}`);
+        
+        const fileStream = fs.createWriteStream(tmpFilePath);
+        await pipeline(Readable.fromWeb(response.body), fileStream);
+
         logs.push(`[Scan] กำลังแกะไฟล์และวิเคราะห์ AndroidManifest.xml...`);
 
-        // 1. แกะซอร์สโค้ดเพื่ออ่านข้อมูลของจริง!
-        const parser = new AppInfoParser(filePath);
+        // 2. แกะซอร์สโค้ดเพื่ออ่านข้อมูลของจริง!
+        const parser = new AppInfoParser(tmpFilePath);
         const appInfo = await parser.parse();
 
         logs.push(`[Info] Package Name จริง: ${appInfo.package}`);
         logs.push(`[Info] Version Code: ${appInfo.versionCode}`);
 
-        // 2. ตรวจสอบความปลอดภัยจาก Permission
+        // 3. ตรวจสอบความปลอดภัยจาก Permission
         const permissions = appInfo.usesPermissions || [];
         logs.push(`[Scan] กำลังตรวจสอบสิทธิ์การเข้าถึง ${permissions.length} รายการ...`);
         
@@ -140,7 +146,7 @@ app.post('/api/scan-apk', async (req, res) => {
 
         logs.push(`[Success] ไม่พบพฤติกรรมมัลแวร์ Shenall Guard อนุมัติ.`);
 
-        // 🌟 3. ระบบคัดแยกไฟล์ (ABI / Architecture Splitter) สำหรับ Universal APK
+        // 🌟 4. ระบบคัดแยกไฟล์ (ABI / Architecture Splitter) สำหรับ Universal APK
         logs.push(`[System] กำลังวิเคราะห์สถาปัตยกรรม (Architecture) ของไฟล์...`);
         const fileNameLower = originalname.toLowerCase();
         let abis = ['armeabi-v7a (32-bit)', 'arm64-v8a (64-bit)'];
@@ -154,23 +160,22 @@ app.post('/api/scan-apk', async (req, res) => {
         logs.push(`[Optimize] ระบบกำลังคัดแยกไฟล์และแยกส่วนแพ็กเกจ (Splitting) อัตโนมัติ...`);
         logs.push(`[Success] สร้างตัวติดตั้งที่เหมาะสมสำหรับอุปกรณ์แต่ละรุ่นสำเร็จ (ป้องกันปัญหาติดตั้งไม่ได้)`);
 
-        // 4. อัปโหลดไฟล์ APK จริงขึ้น Cloudinary (เก็บเป็นไฟล์ดิบ raw)
-        logs.push(`[Upload] กำลังย้ายไฟล์ติดตั้งขึ้นสู่ระบบ Cloud...`);
-        const uploadResult = await cloudinary.uploader.upload(filePath, { resource_type: 'raw' });
+        // ไม่ต้องอัปโหลดขึ้น Cloudinary อีกรอบแล้วเพราะไฟล์อยู่บนนั้นแล้ว
+        logs.push(`[Success] กระบวนการตรวจสอบเสร็จสมบูรณ์ 100%`);
 
-        fs.unlinkSync(filePath); // แกะเสร็จแล้วลบไฟล์ชั่วคราวทิ้ง
+        fs.unlinkSync(tmpFilePath); // แกะเสร็จแล้วลบไฟล์ชั่วคราวทิ้ง
         res.json({ 
             success: true, 
             logs, 
             appInfo: { package: appInfo.package }, 
-            apkUrl: uploadResult.secure_url, 
+            apkUrl: apkUrl, 
             apkSize: size,
             finalIapFee,
             penalty
         });
     } catch (error) {
         console.error(error);
-        if (req.body.filePath && fs.existsSync(req.body.filePath)) fs.unlinkSync(req.body.filePath);
+        if (tmpFilePath && fs.existsSync(tmpFilePath)) fs.unlinkSync(tmpFilePath);
         res.status(500).json({ error: 'Decompile failed: ไฟล์อาจไม่ใช่ APK ที่ถูกต้อง หรือเกิดข้อผิดพลาดในการประมวลผล' });
     }
 });
