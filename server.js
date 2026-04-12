@@ -20,16 +20,18 @@ cloudinary.config({
 });
 
 // 🌟 ตั้งค่า Firebase Admin SDK
+let db;
 try {
     // ดึง Service Account Key มาใช้งาน (ใช้ Secret File บน Render)
     const serviceAccount = require('./serviceAccountKey.json');
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
+    db = admin.firestore();
 } catch (error) {
-    console.log("⚠️ ไม่พบไฟล์ serviceAccountKey.json กรุณาตรวจสอบการตั้งค่า");
+    console.error("⚠️ FATAL ERROR: ไม่พบไฟล์ serviceAccountKey.json ในระบบของ Render");
+    process.exit(1); // บังคับหยุดการทำงานถ้าไม่มีกุญแจฐานข้อมูล
 }
-const db = admin.firestore();
 
 // ตั้งค่า Multer ให้อ่านไฟล์มาเก็บไว้ใน Memory ชั่วคราว
 const storage = multer.memoryStorage();
