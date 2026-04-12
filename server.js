@@ -1,8 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const cloudinary = require('cloudinary').v2;
 const admin = require('firebase-admin');
+const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { getFirestore } = require('firebase-admin/firestore');
 const os = require('os');
 const fs = require('fs');
@@ -19,12 +20,17 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// ตั้งค่า Cloudinary จากไฟล์ .env
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
+// 🌟 ตั้งค่า Cloudflare R2
+const s3 = new S3Client({
+    region: "auto",
+    endpoint: process.env.R2_ENDPOINT, // ตัวอย่าง: https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+    credentials: {
+        accessKeyId: process.env.R2_ACCESS_KEY_ID,
+        secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
+    },
 });
+const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL; // ตัวอย่าง: https://pub-xxxx.r2.dev
+const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "shenall-store";
 
 // 🌟 ตั้งค่า Firebase Admin SDK
 let db;
@@ -52,27 +58,30 @@ const diskStorage = multer.diskStorage({
 });
 const uploadDisk = multer({ storage: diskStorage });
 
-// 🌟 API 1: ออกใบอนุญาต (Signature) ให้หน้าเว็บอัปโหลดไฟล์ตรงไปที่ Cloudinary (Direct Upload)
-app.get('/api/cloudinary-sign', (req, res) => {
+// 🌟 API 1: ออกใบอนุญาต (Presigned URL) ให้หน้าเว็บอัปโหลดไฟล์ตรงไปที่ Cloudflare R2
+app.post('/api/r2-presigned-url', async (req, res) => {
     try {
-        const timestamp = Math.round((new Date).getTime() / 1000);
-        const signature = cloudinary.utils.api_sign_request({
-            timestamp: timestamp
-        }, process.env.CLOUDINARY_API_SECRET);
+        const { filename, contentType } = req.body;
+        const uniqueFilename = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.]/g, '_')}`; // ตั้งชื่อไฟล์ใหม่ไม่ให้ซ้ำ
 
-        res.json({
-            timestamp,
-            signature,
-            cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-            apiKey: process.env.CLOUDINARY_API_KEY
+        const command = new PutObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: uniqueFilename,
+            ContentType: contentType || 'application/octet-stream',
         });
+
+        // ออกใบอนุญาตให้อัปโหลดได้ภายใน 1 ชั่วโมง (3600 วินาที)
+        const signedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
+        const publicUrl = `${R2_PUBLIC_URL}/${uniqueFilename}`; // URL สำหรับดาวน์โหลด
+
+        res.json({ signedUrl, publicUrl });
     } catch (error) {
         console.error('Signature Error:', error);
-        res.status(500).json({ error: 'Failed to generate signature' });
+        res.status(500).json({ error: 'Failed to generate Presigned URL' });
     }
 });
 
-// 🌟 API 2: สำหรับให้ AI ดาวน์โหลดไฟล์จาก Cloudinary มาสแกน
+// 🌟 API 2: สำหรับให้ AI ดาวน์โหลดไฟล์จาก R2 มาสแกน
 app.post('/api/scan-apk', async (req, res) => {
     let tmpFilePath = null;
     try {
