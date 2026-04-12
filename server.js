@@ -86,6 +86,46 @@ app.post('/api/apps', async (req, res) => {
     }
 });
 
+// 🌟 3. API สำหรับรับ OAuth Code มาแลก Token และดึงโปรไฟล์
+app.post('/api/oauth/callback', async (req, res) => {
+    try {
+        const { code, redirect_uri } = req.body;
+        if (!code) return res.status(400).json({ error: 'Authorization code is required' });
+
+        // 1. นำ Code ไปแลก Access Token จากเซิร์ฟเวอร์ Chatchat
+        const tokenResponse = await fetch('https://chatchat-backend.onrender.com/api/oauth/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                client_id: process.env.CHATCHAT_CLIENT_ID,
+                client_secret: process.env.CHATCHAT_CLIENT_SECRET,
+                code: code,
+                redirect_uri: redirect_uri
+            })
+        });
+
+        if (!tokenResponse.ok) {
+            const errData = await tokenResponse.json();
+            throw new Error(errData.error || 'Failed to exchange token');
+        }
+        const tokenData = await tokenResponse.json();
+
+        // 2. นำ Access Token ไปดึงข้อมูลโปรไฟล์ผู้ใช้
+        const userResponse = await fetch('https://chatchat-backend.onrender.com/api/oauth/userinfo', {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${tokenData.access_token}` }
+        });
+        if (!userResponse.ok) throw new Error('Failed to fetch user info');
+        const userData = await userResponse.json();
+
+        // 3. ส่งข้อมูลโปรไฟล์กลับไปให้ Frontend
+        res.json({ success: true, user: userData });
+    } catch (error) {
+        console.error("OAuth Error:", error.message);
+        res.status(500).json({ error: 'Authentication failed', details: error.message });
+    }
+});
+
 app.listen(port, () => {
     console.log(`Backend server running at http://localhost:${port}`);
 });
