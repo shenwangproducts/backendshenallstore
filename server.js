@@ -97,6 +97,7 @@ app.post('/api/oauth/callback', async (req, res) => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+                grant_type: 'authorization_code',
                 client_id: process.env.CHATCHAT_CLIENT_ID,
                 client_secret: process.env.CHATCHAT_CLIENT_SECRET,
                 code: code,
