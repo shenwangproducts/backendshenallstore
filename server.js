@@ -67,7 +67,7 @@ app.get('/api/apps', async (req, res) => {
         res.json(apps);
     } catch (error) {
         console.error("Error fetching apps:", error);
-        res.status(500).json({ error: 'Failed to fetch apps' });
+        res.status(500).json({ error: 'Failed to fetch apps', details: error.message });
     }
 });
 
@@ -80,7 +80,7 @@ app.post('/api/apps', async (req, res) => {
         res.status(201).json({ success: true, id: docRef.id });
     } catch (error) {
         console.error("Error saving app:", error);
-        res.status(500).json({ error: 'Failed to save app' });
+        res.status(500).json({ error: 'Failed to save app', details: error.message });
     }
 });
 
