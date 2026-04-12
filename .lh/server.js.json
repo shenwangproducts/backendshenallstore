@@ -3,7 +3,7 @@
     "activeCommit": 0,
     "commits": [
         {
-            "activePatchIndex": 2,
+            "activePatchIndex": 4,
             "patches": [
                 {
                     "date": 1775974498720,
@@ -16,6 +16,14 @@
                 {
                     "date": 1775975817437,
                     "content": "Index: \n===================================================================\n--- \n+++ \n@@ -1,12 +1,23 @@\n+const express = require('express');\r\n const cors = require('cors');\r\n const multer = require('multer');\r\n const cloudinary = require('cloudinary').v2;\r\n const { initializeApp } = require('firebase/app');\r\n const { getFirestore, collection, addDoc, getDocs } = require('firebase/firestore');\r\n require('dotenv').config();\r\n \r\n const app = express();\r\n+const port = process.env.PORT || 3000;\r\n+\r\n+// อนุญาตให้หน้าเว็บ (Frontend) ยิง API เข้ามาได้\r\n+app.use(cors());\r\n+app.use(express.json());\r\n+\r\n+// ตั้งค่า Cloudinary จากไฟล์ .env\r\n+cloudinary.config({\r\n+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,\r\n+    api_key: process.env.CLOUDINARY_API_KEY,\r\n     api_secret: process.env.CLOUDINARY_API_SECRET\r\n });\r\n \r\n // ตั้งค่า Firebase Database\r\n@@ -26,8 +37,25 @@\n \r\n // ตั้งค่า Multer ให้อ่านไฟล์มาเก็บไว้ใน Memory ชั่วคราว\r\n const storage = multer.memoryStorage();\r\n const upload = multer({ storage: storage });\r\n+\r\n+// API สำหรับรับไฟล์และอัปโหลดขึ้น Cloudinary\r\n+app.post('/api/upload', upload.single('file'), async (req, res) => {\r\n+    try {\r\n+        const resourceType = req.body.resourceType || 'auto';\r\n+        // สร้าง Buffer ของไฟล์ให้กลายเป็น Base64 เพื่อส่งให้ Cloudinary\r\n+        const b64 = Buffer.from(req.file.buffer).toString('base64');\r\n+        let dataURI = \"data:\" + req.file.mimetype + \";base64,\" + b64;\r\n+        \r\n+        const result = await cloudinary.uploader.upload(dataURI, {\r\n+            resource_type: resourceType\r\n+        });\r\n+        \r\n+        res.json({ url: result.secure_url });\r\n+    } catch (error) {\r\n+        console.error(error);\r\n+        res.status(500).json({ error: 'Upload failed' });\r\n     }\r\n });\r\n \r\n // 🌟 1. API สำหรับดึงข้อมูลแอปทั้งหมดไปแสดงผล (GET)\r\n"
+                },
+                {
+                    "date": 1775982617797,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n@@ -22,8 +22,9 @@\n \r\n // ตั้งค่า Firebase Database\r\n const firebaseConfig = {\r\n     apiKey: \"AIzaSyDbGswzP776ckZccnj72dkLMTNTD9ekMMQ\",\r\n+    apiKey: process.env.FIREBASE_API_KEY,\r\n     authDomain: \"shenall.firebaseapp.com\",\r\n     projectId: \"shenall\",\r\n     storageBucket: \"shenall.firebasestorage.app\",\r\n     messagingSenderId: \"879387934872\",\r\n"
+                },
+                {
+                    "date": 1775982628175,
+                    "content": "Index: \n===================================================================\n--- \n+++ \n@@ -21,9 +21,8 @@\n });\r\n \r\n // ตั้งค่า Firebase Database\r\n const firebaseConfig = {\r\n-    apiKey: \"AIzaSyDbGswzP776ckZccnj72dkLMTNTD9ekMMQ\",\r\n     apiKey: process.env.FIREBASE_API_KEY,\r\n     authDomain: \"shenall.firebaseapp.com\",\r\n     projectId: \"shenall\",\r\n     storageBucket: \"shenall.firebasestorage.app\",\r\n"
                 }
             ],
             "date": 1775974498720,
