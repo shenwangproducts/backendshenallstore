@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const admin = require('firebase-admin');
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { getFirestore } = require('firebase-admin/firestore');
 const os = require('os');
@@ -79,6 +79,72 @@ app.post('/api/r2-presigned-url', async (req, res) => {
     } catch (error) {
         console.error('Signature Error:', error);
         res.status(500).json({ error: 'Failed to generate Presigned URL' });
+    }
+});
+
+// 🌟 ========================================== 🌟
+// 🌟 API สำหรับ Multipart Upload (ไฟล์ขนาดใหญ่)   🌟
+// 🌟 ========================================== 🌟
+
+// 1. เริ่มต้นขออัปโหลดแบบแบ่งก้อน (Start Multipart)
+app.post('/api/upload/start', async (req, res) => {
+    try {
+        const { filename, contentType } = req.body;
+        const uniqueFilename = `${Date.now()}-${filename.replace(/[^a-zA-Z0-9.]/g, '_')}`;
+
+        const command = new CreateMultipartUploadCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: uniqueFilename,
+            ContentType: contentType || 'application/octet-stream',
+        });
+
+        const response = await s3.send(command);
+        res.json({ uploadId: response.UploadId, key: uniqueFilename });
+    } catch (error) {
+        console.error('Start Multipart Error:', error);
+        res.status(500).json({ error: 'Failed to start multipart upload' });
+    }
+});
+
+// 2. ออกใบอนุญาตอัปโหลดให้แต่ละก้อน (Presign Part)
+app.post('/api/upload/presign-part', async (req, res) => {
+    try {
+        const { key, uploadId, partNumber } = req.body;
+
+        const command = new UploadPartCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId,
+            PartNumber: partNumber,
+        });
+
+        const signedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
+        res.json({ signedUrl });
+    } catch (error) {
+        console.error('Presign Part Error:', error);
+        res.status(500).json({ error: 'Failed to generate part URL' });
+    }
+});
+
+// 3. สั่งประกอบร่างไฟล์เมื่อส่งครบทุกก้อน (Complete Upload)
+app.post('/api/upload/complete', async (req, res) => {
+    try {
+        const { key, uploadId, parts } = req.body;
+        // parts คือ Array ของ { ETag, PartNumber } ที่ได้จาก Frontend
+
+        const command = new CompleteMultipartUploadCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+            UploadId: uploadId,
+            MultipartUpload: { Parts: parts }
+        });
+
+        await s3.send(command);
+        const publicUrl = `${R2_PUBLIC_URL}/${key}`;
+        res.json({ success: true, publicUrl });
+    } catch (error) {
+        console.error('Complete Multipart Error:', error);
+        res.status(500).json({ error: 'Failed to complete multipart upload' });
     }
 });
 
