@@ -177,7 +177,7 @@ app.post('/api/scan-apk', async (req, res) => {
         res.json({ 
             success: true, 
             logs, 
-            appInfo: { package: appInfo.package }, 
+            appInfo: { package: appInfo.package, versionName: appInfo.versionName }, 
             apkUrl: apkUrl, 
             apkSize: size,
             finalIapFee,
@@ -274,6 +274,12 @@ app.post('/api/oauth/callback', async (req, res) => {
         });
         if (!userResponse.ok) throw new Error('Failed to fetch user info');
         const userData = await userResponse.json();
+
+        // 🌟 ตรวจสอบว่าเป็น Admin หรือไม่ จากตัวแปรแวดล้อม (.env)
+        const adminEmails = (process.env.ADMIN_EMAILS || "").split(',').map(e => e.trim());
+        if (adminEmails.includes(userData.email)) {
+            userData.isAdmin = true;
+        }
 
         // 3. ส่งข้อมูลโปรไฟล์กลับไปให้ Frontend
         res.json({ success: true, user: userData });
