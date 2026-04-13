@@ -28,6 +28,7 @@ const s3 = new S3Client({
         accessKeyId: process.env.R2_ACCESS_KEY_ID,
         secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     },
+    forcePathStyle: true, // 🌟 บังคับใช้ Path Style เพื่อแก้ปัญหา Connection Reset ของ Cloudflare R2
 });
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL; // ตัวอย่าง: https://pub-xxxx.r2.dev
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "shenall-store";
