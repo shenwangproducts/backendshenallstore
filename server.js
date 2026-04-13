@@ -283,6 +283,10 @@ app.post('/api/oauth/callback', async (req, res) => {
     }
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
     console.log(`Backend server running at http://localhost:${port}`);
 });
+
+// 🌟 ป้องกันปัญหา Render ตัดการเชื่อมต่อกลางคัน (ERR_CONNECTION_RESET)
+server.keepAliveTimeout = 65000; // ให้รอได้อย่างน้อย 65 วินาที
+server.headersTimeout = 66000;
