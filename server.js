@@ -4,7 +4,7 @@ const multer = require('multer');
 const admin = require('firebase-admin');
 const { S3Client, PutObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
-const { getFirestore } = require('firebase-admin/firestore');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore'); // 🌟 นำเข้า FieldValue เพื่อใช้คำนวณตัวเลขบวกเพิ่ม
 const os = require('os');
 const fs = require('fs');
 const AppInfoParser = require('app-info-parser');
@@ -307,6 +307,78 @@ app.delete('/api/apps/:id', async (req, res) => {
         res.status(500).json({ error: 'Failed to delete app', details: error.message });
     }
 });
+
+    // 🌟 API สำหรับเพิ่มยอดดาวน์โหลดแอป (นับยอดจริง)
+    app.post('/api/apps/:id/download', async (req, res) => {
+        try {
+            const appId = req.params.id;
+            await db.collection("apps").doc(appId).update({
+                downloadCount: FieldValue.increment(1) // สั่ง Firestore ให้ +1 ยอดดาวน์โหลดทันที
+            });
+            res.json({ success: true });
+        } catch (error) {
+            console.error("Error updating download count:", error);
+            res.status(500).json({ error: 'Failed to update download count' });
+        }
+    });
+
+    // 🌟 API สำหรับดึงรีวิวของแอป
+    app.get('/api/apps/:id/reviews', async (req, res) => {
+        try {
+            const appId = req.params.id;
+            // ดึงรีวิวจาก Subcollection เรียงตามเวลาใหม่สุดไปเก่าสุด
+            const snapshot = await db.collection("apps").doc(appId).collection("reviews").orderBy("timestamp", "desc").get();
+            const reviews = [];
+            snapshot.forEach(doc => reviews.push({ id: doc.id, ...doc.data() }));
+            res.json(reviews);
+        } catch (error) {
+            console.error("Error fetching reviews:", error);
+            res.status(500).json({ error: 'Failed to fetch reviews' });
+        }
+    });
+
+    // 🌟 API สำหรับโพสต์รีวิวใหม่
+    app.post('/api/apps/:id/reviews', async (req, res) => {
+        try {
+            const appId = req.params.id;
+            const reviewData = {
+                ...req.body,
+                timestamp: FieldValue.serverTimestamp() // ใช้เวลาของ Server จริง
+            };
+            
+            // 1. เพิ่มรีวิวลง Subcollection
+            const docRef = await db.collection("apps").doc(appId).collection("reviews").add(reviewData);
+            
+            // 2. เพิ่มจำนวนรีวิวรวมที่ตัวแอป เพื่อนำไปใช้จัดอันดับ Top 10 อัตโนมัติ
+            await db.collection("apps").doc(appId).update({
+                reviewCount: FieldValue.increment(1)
+            });
+
+            res.json({ success: true, id: docRef.id });
+        } catch (error) {
+            console.error("Error posting review:", error);
+            res.status(500).json({ error: 'Failed to post review' });
+        }
+    });
+
+    // 🌟 API สำหรับอัปเดตและซิงก์รูปโปรไฟล์/ชื่อผู้ใช้
+    app.post('/api/users/sync', async (req, res) => {
+        try {
+            const { email, name, avatar } = req.body;
+            if (!email) return res.status(400).json({ error: 'Email is required' });
+            
+            await db.collection("users").doc(email).set({
+                name,
+                avatar,
+                lastActive: FieldValue.serverTimestamp()
+            }, { merge: true }); // merge: true จะอัปเดตเฉพาะฟิลด์ที่ส่งมาโดยไม่ลบข้อมูลเก่า
+            
+            res.json({ success: true });
+        } catch (error) {
+            console.error("Error syncing user:", error);
+            res.status(500).json({ error: 'Failed to sync user profile' });
+        }
+    });
 
 // 🌟 3. API สำหรับรับ OAuth Code มาแลก Token และดึงโปรไฟล์
 app.post('/api/oauth/callback', async (req, res) => {
