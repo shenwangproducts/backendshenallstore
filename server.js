@@ -7,6 +7,9 @@ const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { getFirestore, FieldValue } = require('firebase-admin/firestore'); // 🌟 นำเข้า FieldValue เพื่อใช้คำนวณตัวเลขบวกเพิ่ม
 const os = require('os');
 const fs = require('fs');
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
 const AppInfoParser = require('app-info-parser');
 const path = require('path');
 const { Readable } = require('stream');
@@ -288,6 +291,64 @@ app.put('/api/apps/:id', async (req, res) => {
     try {
         const appId = req.params.id;
         const updateData = req.body;
+
+        // 🌟 ตรวจสอบว่าเป็นการอัปเดตไฟล์ APK หรือไม่
+        if (updateData.apkUrl) {
+            const appDocRef = db.collection("apps").doc(appId);
+            const appDoc = await appDocRef.get();
+
+            if (appDoc.exists) {
+                const oldData = appDoc.data();
+                const oldApkUrl = oldData.apkUrl;
+                const newApkUrl = updateData.apkUrl;
+
+                if (oldApkUrl && newApkUrl && oldApkUrl !== newApkUrl) {
+                    console.log('[Delta] Detected APK update. Starting delta patch process...');
+                    const oldFilePath = path.join(os.tmpdir(), `old_${appId}.apk`);
+                    const newFilePath = path.join(os.tmpdir(), `new_${appId}.apk`);
+                    const patchFilePath = path.join(os.tmpdir(), `patch_${appId}.bin`);
+
+                    try {
+                        // 1. ดาวน์โหลดไฟล์เก่าและใหม่
+                        console.log('[Delta] Downloading old and new APKs...');
+                        const [oldFileRes, newFileRes] = await Promise.all([fetch(oldApkUrl), fetch(newApkUrl)]);
+                        await pipeline(Readable.fromWeb(oldFileRes.body), fs.createWriteStream(oldFilePath));
+                        await pipeline(Readable.fromWeb(newFileRes.body), fs.createWriteStream(newFilePath));
+
+                        // 2. สร้าง Patch ด้วย xdelta3
+                        console.log('[Delta] Creating patch with xdelta3...');
+                        await execPromise(`xdelta3 -e -s "${oldFilePath}" "${newFilePath}" "${patchFilePath}"`);
+
+                        // 3. อัปโหลด Patch ขึ้น R2
+                        const patchFileContent = fs.readFileSync(patchFilePath);
+                        const patchKey = `patches/${Date.now()}-${appId}.patch`;
+                        const putCommand = new PutObjectCommand({
+                            Bucket: R2_BUCKET_NAME,
+                            Key: patchKey,
+                            Body: patchFileContent,
+                            ContentType: 'application/octet-stream'
+                        });
+                        await s3.send(putCommand);
+
+                        // 4. เพิ่มข้อมูล Patch ลงใน updateData
+                        updateData.patch = {
+                            fromVersion: oldData.version,
+                            url: `${R2_PUBLIC_URL}/${patchKey}`,
+                            size: (fs.statSync(patchFilePath).size / (1024 * 1024)).toFixed(2) + ' MB'
+                        };
+                        console.log(`[Delta] Patch created successfully: ${updateData.patch.size}`);
+
+                    } catch (patchError) {
+                        console.error('[Delta] Error during patch creation:', patchError);
+                        // ถ้าสร้าง Patch ไม่สำเร็จ ก็ไม่เป็นไร ให้อัปเดตแบบปกติไปก่อน
+                    } finally {
+                        // 5. ลบไฟล์ชั่วคราว
+                        [oldFilePath, newFilePath, patchFilePath].forEach(fp => fs.existsSync(fp) && fs.unlinkSync(fp));
+                    }
+                }
+            }
+        }
+
         await db.collection("apps").doc(appId).update(updateData);
         res.json({ success: true });
     } catch (error) {
