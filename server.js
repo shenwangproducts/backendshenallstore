@@ -5,6 +5,7 @@ const admin = require('firebase-admin');
 const { S3Client, PutObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { getFirestore, FieldValue } = require('firebase-admin/firestore'); // 🌟 นำเข้า FieldValue เพื่อใช้คำนวณตัวเลขบวกเพิ่ม
+const { getMessaging } = require('firebase-admin/messaging'); // 🌟 นำเข้าระบบยิงแจ้งเตือน Push Notification
 const os = require('os');
 const fs = require('fs');
 const { exec } = require('child_process');
@@ -280,6 +281,26 @@ app.post('/api/apps', async (req, res) => {
         const appData = req.body;
         // บันทึกลง Firestore ผ่าน Backend
         const docRef = await db.collection("apps").add(appData);
+
+        // 🌟 ส่ง Push Notification หว่านแจ้งเตือนให้แอปทุกเครื่องที่ลงทะเบียน Topic: 'all_users' ไว้
+        if (appData.status === 'approved' || !appData.status) {
+            try {
+                const message = {
+                    notification: {
+                        title: 'เกม/แอปใหม่มาแรง! 🚀',
+                        body: `แอป ${appData.name} เข้าสโตร์แล้ว โหลดเลย!`,
+                        ...(appData.iconUrl ? { imageUrl: appData.iconUrl } : {}) // แนบรูปไอคอนแอปไปด้วย
+                    },
+                    data: { appId: docRef.id },
+                    topic: 'all_users'
+                };
+                await getMessaging().send(message);
+                console.log(`[Notification] กระจายแจ้งเตือนแอปใหม่ ${appData.name} สำเร็จ!`);
+            } catch (notifyErr) {
+                console.error("[Notification] ส่งแจ้งเตือนล้มเหลว:", notifyErr);
+            }
+        }
+        
         res.status(201).json({ success: true, id: docRef.id });
     } catch (error) {
         console.error("Error saving app:", error);
@@ -438,6 +459,31 @@ app.delete('/api/apps/:id', async (req, res) => {
         } catch (error) {
             console.error("Error syncing user:", error);
             res.status(500).json({ error: 'Failed to sync user profile' });
+        }
+    });
+
+    // 🌟 API สำหรับส่ง Push Notification แบบกำหนดเอง (สำหรับแอดมินพิมพ์ส่งเอง)
+    app.post('/api/notifications/send', async (req, res) => {
+        try {
+            const { title, body, appId, imageUrl } = req.body;
+
+            const message = {
+                notification: {
+                    title: title || 'แจ้งเตือนจาก Shenall Store',
+                    body: body || 'มีอัปเดตใหม่ในสโตร์',
+                    ...(imageUrl ? { imageUrl } : {})
+                },
+                data: {
+                    ...(appId ? { appId: String(appId) } : {})
+                },
+                topic: 'all_users' // ส่งหาทุกคน
+            };
+
+            const response = await getMessaging().send(message);
+            res.json({ success: true, messageId: response });
+        } catch (error) {
+            console.error("Error sending custom push notification:", error);
+            res.status(500).json({ error: 'Failed to send notification', details: error.message });
         }
     });
 
