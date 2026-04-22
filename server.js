@@ -41,14 +41,22 @@ const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "shenall-store";
 let db;
 try {
     // ดึง Service Account Key มาใช้งาน (ใช้ Secret File บน Render)
-    const serviceAccount = require('./serviceAccountKey.json');
+    let serviceAccount;
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        // รองรับการใส่ข้อมูล JSON ลงใน Environment Variable โดยตรง
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    } else {
+        // รองรับการอ่านจากไฟล์ (ถ้ามีไฟล์ในโฟลเดอร์)
+        serviceAccount = require('./serviceAccountKey.json');
+    }
+    
     const firebaseApp = admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
     // 🌟 ชี้เป้าหมายไปที่ฐานข้อมูลชื่อ "store" ที่คุณเพิ่งสร้าง
     db = getFirestore(firebaseApp, "store");
 } catch (error) {
-    console.error("⚠️ FATAL ERROR: ไม่พบไฟล์ serviceAccountKey.json ในระบบของ Render");
+    console.error("⚠️ FATAL ERROR: ไม่พบข้อมูล Firebase Service Account");
     process.exit(1); // บังคับหยุดการทำงานถ้าไม่มีกุญแจฐานข้อมูล
 }
 
