@@ -495,6 +495,30 @@ app.delete('/api/apps/:id', async (req, res) => {
         }
     });
 
+    // 🌟 API สำหรับส่ง Silent Notification (แจ้งเตือนแบบเงียบ - ซ่อนจากผู้ใช้)
+    // ใช้สำหรับคำสั่งระบบ เช่น "บังคับหยุดเกม (Remote Kill)" หรือ "เตะเพื่อน"
+    app.post('/api/notifications/silent', async (req, res) => {
+        try {
+            const { targetToken, action, appId, reason } = req.body;
+
+            const message = {
+                data: {
+                    action: action || 'remote_kill', // คำสั่งให้แอปไปทำงานต่อ
+                    appId: String(appId || ''),
+                    reason: String(reason || 'ถูกยกเลิกสิทธิ์โหมดใจดี')
+                },
+                topic: targetToken ? undefined : 'all_users', // ส่งหาเครื่องเดียว หรือ ส่งหาทุกคนที่แชร์
+                ...(targetToken ? { token: targetToken } : {})
+            };
+
+            const response = await getMessaging().send(message);
+            res.json({ success: true, messageId: response });
+        } catch (error) {
+            console.error("Silent Notification Error:", error);
+            res.status(500).json({ error: 'Failed to send silent notification', details: error.message });
+        }
+    });
+
 // 🌟 3. API สำหรับรับ OAuth Code มาแลก Token และดึงโปรไฟล์
 app.post('/api/oauth/callback', async (req, res) => {
     try {
