@@ -660,7 +660,8 @@ app.post('/api/oauth/callback', async (req, res) => {
         }
 
         // 🌟 สร้าง Store ID ประจำตัวที่แน่นอน (แปลงโค้ดจากอีเมล)
-        const hash = crypto.createHash('sha256').update(userData.email).digest('hex').substring(0, 8).toUpperCase();
+        const safeEmail = userData.email || userData.name || String(Date.now());
+        const hash = crypto.createHash('sha256').update(safeEmail).digest('hex').substring(0, 8).toUpperCase();
         userData.storeId = `SHEN-${hash}`;
 
         // 🌟 บันทึกหรืออัปเดตข้อมูลผู้ใช้ลง Firebase ทันทีที่เข้าสู่ระบบ (เพื่อให้คนอื่นค้นหาเจอ)
