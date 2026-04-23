@@ -519,6 +519,100 @@ app.delete('/api/apps/:id', async (req, res) => {
         }
     });
 
+    // 🌟 ========================================== 🌟
+    // 🌟 API สำหรับโหมดใจดี (Kindness Mode)         🌟
+    // 🌟 ========================================== 🌟
+
+    // 1. ค้นหาเพื่อนด้วย Store ID หรือ Email (ดึงข้อมูลจริงจาก Firebase)
+    app.get('/api/users/search', async (req, res) => {
+        try {
+            const { id } = req.query;
+            if (!id) return res.status(400).json({ error: 'ID is required' });
+            
+            let userDoc = null;
+            
+            // 🌟 ค้นหาด้วย Email ตรงๆ
+            const doc = await db.collection("users").doc(id).get();
+            if (doc.exists) {
+                userDoc = { email: doc.id, ...doc.data() };
+            }
+            // 🌟 (ทางเลือก) ถ้าอนาคตมีการเซฟ Store ID ลง Firebase ก็สามารถใช้ where("storeId", "==", id) ค้นหาได้
+
+            if (userDoc) {
+                return res.json({ 
+                    email: userDoc.email, 
+                    name: userDoc.name || 'ผู้ใช้งาน', 
+                    token: userDoc.fcmToken || '' 
+                });
+            }
+            res.status(404).json({ error: 'ไม่พบผู้ใช้งานในระบบ' });
+        } catch (error) {
+            console.error("Search API Error:", error);
+            res.status(500).json({ error: 'Search failed' });
+        }
+    });
+
+    // 2. ดึงข้อมูลแดชบอร์ด (ข้อมูลจริงจาก Firebase)
+    app.get('/api/kindness/dashboard', async (req, res) => {
+        try {
+            const email = req.query.email;
+            if (!email) return res.status(400).json({ error: 'Email is required' });
+
+            // 🌟 ดึงรายชื่อเพื่อนจาก Subcollection "friends" ของผู้ใช้งาน
+            const friendsSnapshot = await db.collection("users").doc(email).collection("friends").get();
+            const friendsList = [];
+            friendsSnapshot.forEach(doc => friendsList.push({ id: doc.id, ...doc.data() }));
+
+            // 🌟 ดึงข้อมูลคนที่กำลังเล่นเกมของเราอยู่จาก Collection "active_sessions"
+            const sessionsSnapshot = await db.collection("active_sessions").where("ownerEmail", "==", email).get();
+            const activeSessions = [];
+            sessionsSnapshot.forEach(doc => activeSessions.push({ id: doc.id, ...doc.data() }));
+
+            res.json({
+                activeSessions: activeSessions,
+                friendsList: friendsList
+            });
+        } catch (error) {
+            console.error("Dashboard API Error:", error);
+            res.status(500).json({ error: 'Dashboard failed' });
+        }
+    });
+
+    // 3. ส่งคำขอเพิ่มเพื่อน (บันทึกลง Firebase จริง)
+    app.post('/api/kindness/request', async (req, res) => {
+        try {
+            const { from, to } = req.body;
+            // 🌟 บันทึกคำขอลงใน Subcollection "requests" ของบัญชีเป้าหมาย
+            await db.collection("users").doc(to).collection("requests").add({
+                fromEmail: from,
+                type: 'friend_request',
+                status: 'pending',
+                timestamp: FieldValue.serverTimestamp()
+            });
+            res.json({ success: true });
+        } catch (error) {
+            console.error("Friend Request Error:", error);
+            res.status(500).json({ error: 'Request failed' });
+        }
+    });
+
+    // 4. ส่งคำร้องขอสิทธิ์เล่นเกม
+    app.post('/api/kindness/play-request', async (req, res) => {
+        try {
+            const { requester, appId } = req.body;
+            // 🌟 เซฟข้อมูลการขอสิทธิ์ลงฐานข้อมูล
+            await db.collection("play_requests").add({
+                requesterEmail: requester,
+                appId: appId,
+                status: 'pending',
+                timestamp: FieldValue.serverTimestamp()
+            });
+            res.json({ success: true });
+        } catch (error) {
+            res.status(500).json({ error: 'Play Request failed' });
+        }
+    });
+
 // 🌟 3. API สำหรับรับ OAuth Code มาแลก Token และดึงโปรไฟล์
 app.post('/api/oauth/callback', async (req, res) => {
     try {
