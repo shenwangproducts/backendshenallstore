@@ -570,6 +570,11 @@ app.delete('/api/apps/:id', async (req, res) => {
             const friendsList = [];
             friendsSnapshot.forEach(doc => friendsList.push({ id: doc.id, ...doc.data() }));
 
+            // 🌟 ดึงคำขอเป็นเพื่อนที่ยังรอการอนุมัติ (Pending Requests)
+            const requestsSnapshot = await db.collection("users").doc(email).collection("requests").where("status", "==", "pending").get();
+            const pendingRequests = [];
+            requestsSnapshot.forEach(doc => pendingRequests.push({ id: doc.id, ...doc.data() }));
+
             // 🌟 ดึงข้อมูลคนที่กำลังเล่นเกมของเราอยู่จาก Collection "active_sessions"
             const sessionsSnapshot = await db.collection("active_sessions").where("ownerEmail", "==", email).get();
             const activeSessions = [];
@@ -577,7 +582,8 @@ app.delete('/api/apps/:id', async (req, res) => {
 
             res.json({
                 activeSessions: activeSessions,
-                friendsList: friendsList
+                friendsList: friendsList,
+                pendingRequests: pendingRequests // 🌟 ส่งข้อมูลคำขอกลับไปแสดงผล
             });
         } catch (error) {
             console.error("Dashboard API Error:", error);
@@ -588,18 +594,65 @@ app.delete('/api/apps/:id', async (req, res) => {
     // 3. ส่งคำขอเพิ่มเพื่อน (บันทึกลง Firebase จริง)
     app.post('/api/kindness/request', async (req, res) => {
         try {
-            const { from, to } = req.body;
+            const { from, fromName, to } = req.body;
             // 🌟 บันทึกคำขอลงใน Subcollection "requests" ของบัญชีเป้าหมาย
             await db.collection("users").doc(to).collection("requests").add({
                 fromEmail: from,
+                fromName: fromName || from,
                 type: 'friend_request',
                 status: 'pending',
                 timestamp: FieldValue.serverTimestamp()
             });
+
+            // 🌟 พยายามส่ง Push Notification แจ้งเตือนเพื่อนทันที (ถ้าเพื่อนมี Token)
+            const targetDoc = await db.collection("users").doc(to).get();
+            const targetToken = targetDoc.exists ? targetDoc.data().fcmToken : null;
+            if (targetToken) {
+                await getMessaging().send({
+                    notification: {
+                        title: 'มีคำขอโหมดใจดีส่งถึงคุณ 🎁',
+                        body: `${fromName || from} ต้องการเพิ่มคุณเป็นเพื่อน!`
+                    },
+                    token: targetToken
+                }).catch(e => console.log("Push Warning:", e.message));
+            }
+
             res.json({ success: true });
         } catch (error) {
             console.error("Friend Request Error:", error);
             res.status(500).json({ error: 'Request failed' });
+        }
+    });
+
+    // 🌟 3.5. ตอบรับคำขอเป็นเพื่อน (API ใหม่)
+    app.post('/api/kindness/accept', async (req, res) => {
+        try {
+            const { currentUserEmail, requesterEmail, requestId } = req.body;
+            
+            // 1. อัปเดตสถานะคำขอเป็น accepted
+            await db.collection("users").doc(currentUserEmail).collection("requests").doc(requestId).update({ status: 'accepted' });
+            
+            // 2. ดึงข้อมูลของทั้งคู่
+            const reqDoc = await db.collection("users").doc(requesterEmail).get();
+            const curDoc = await db.collection("users").doc(currentUserEmail).get();
+
+            // 3. แอดเพื่อนให้กันและกัน
+            await db.collection("users").doc(currentUserEmail).collection("friends").doc(requesterEmail).set({
+                name: reqDoc.exists ? (reqDoc.data().name || requesterEmail) : requesterEmail,
+                email: requesterEmail,
+                token: reqDoc.exists ? (reqDoc.data().fcmToken || '') : ''
+            });
+
+            await db.collection("users").doc(requesterEmail).collection("friends").doc(currentUserEmail).set({
+                name: curDoc.exists ? (curDoc.data().name || currentUserEmail) : currentUserEmail,
+                email: currentUserEmail,
+                token: curDoc.exists ? (curDoc.data().fcmToken || '') : ''
+            });
+
+            res.json({ success: true });
+        } catch (error) {
+            console.error("Accept Error:", error);
+            res.status(500).json({ error: 'Accept failed' });
         }
     });
 
