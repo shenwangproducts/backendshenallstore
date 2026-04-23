@@ -580,10 +580,16 @@ app.delete('/api/apps/:id', async (req, res) => {
             const activeSessions = [];
             sessionsSnapshot.forEach(doc => activeSessions.push({ id: doc.id, ...doc.data() }));
 
+            // 🌟 ดึงคำขอสิทธิ์เล่นเกมที่เพื่อนส่งมาหาเรา
+            const playReqSnapshot = await db.collection("play_requests").where("ownerEmail", "==", email).where("status", "==", "pending").get();
+            const playRequests = [];
+            playReqSnapshot.forEach(doc => playRequests.push({ id: doc.id, ...doc.data() }));
+
             res.json({
                 activeSessions: activeSessions,
                 friendsList: friendsList,
-                pendingRequests: pendingRequests // 🌟 ส่งข้อมูลคำขอกลับไปแสดงผล
+                pendingRequests: pendingRequests,
+                playRequests: playRequests // 🌟 ส่งคำขอเล่นเกมกลับไปด้วย
             });
         } catch (error) {
             console.error("Dashboard API Error:", error);
@@ -629,8 +635,13 @@ app.delete('/api/apps/:id', async (req, res) => {
         try {
             const { currentUserEmail, requesterEmail, requestId } = req.body;
             
-            // 1. อัปเดตสถานะคำขอเป็น accepted
-            await db.collection("users").doc(currentUserEmail).collection("requests").doc(requestId).update({ status: 'accepted' });
+            // 🌟 เช็กว่ามีค่าส่งมาครบไหม ป้องกัน Error 500 ทะลุเข้า Firebase
+            if (!currentUserEmail || !requesterEmail || !requestId) {
+                return res.status(400).json({ error: 'ข้อมูลไม่ครบถ้วน' });
+            }
+            
+            // 1. อัปเดตสถานะคำขอเป็น accepted (🌟 ใช้ set + merge แทน update ป้องกัน error กรณีหาไฟล์ไม่เจอ)
+            await db.collection("users").doc(currentUserEmail).collection("requests").doc(requestId).set({ status: 'accepted' }, { merge: true });
             
             // 2. ดึงข้อมูลของทั้งคู่
             const reqDoc = await db.collection("users").doc(requesterEmail).get();
@@ -641,35 +652,85 @@ app.delete('/api/apps/:id', async (req, res) => {
                 name: reqDoc.exists ? (reqDoc.data().name || requesterEmail) : requesterEmail,
                 email: requesterEmail,
                 token: reqDoc.exists ? (reqDoc.data().fcmToken || '') : ''
-            });
+            }, { merge: true });
 
             await db.collection("users").doc(requesterEmail).collection("friends").doc(currentUserEmail).set({
                 name: curDoc.exists ? (curDoc.data().name || currentUserEmail) : currentUserEmail,
                 email: currentUserEmail,
                 token: curDoc.exists ? (curDoc.data().fcmToken || '') : ''
-            });
+            }, { merge: true });
 
             res.json({ success: true });
         } catch (error) {
             console.error("Accept Error:", error);
-            res.status(500).json({ error: 'Accept failed' });
+            res.status(500).json({ error: 'Accept failed', details: error.message });
+        }
+    });
+
+    // 🌟 3.6. ปฏิเสธคำขอเป็นเพื่อน
+    app.post('/api/kindness/reject', async (req, res) => {
+        try {
+            const { currentUserEmail, requestId } = req.body;
+            if (!currentUserEmail || !requestId) return res.status(400).json({ error: 'ข้อมูลไม่ครบถ้วน' });
+            await db.collection("users").doc(currentUserEmail).collection("requests").doc(requestId).set({ status: 'rejected' }, { merge: true });
+            res.json({ success: true });
+        } catch (error) {
+            console.error("Reject Error:", error);
+            res.status(500).json({ error: 'Reject failed', details: error.message });
         }
     });
 
     // 4. ส่งคำร้องขอสิทธิ์เล่นเกม
     app.post('/api/kindness/play-request', async (req, res) => {
         try {
-            const { requester, appId } = req.body;
+            const { requester, requesterName, ownerEmail, appId, appName, requesterToken } = req.body;
             // 🌟 เซฟข้อมูลการขอสิทธิ์ลงฐานข้อมูล
             await db.collection("play_requests").add({
                 requesterEmail: requester,
+                requesterName: requesterName || requester,
+                ownerEmail: ownerEmail || 'unknown',
                 appId: appId,
+                appName: appName || 'เกม',
+                requesterToken: requesterToken || '',
                 status: 'pending',
                 timestamp: FieldValue.serverTimestamp()
             });
+            
+            // 🌟 แจ้งเตือนไปยังเครื่องของเจ้าของเกม
+            if (ownerEmail) {
+                const ownerDoc = await db.collection("users").doc(ownerEmail).get();
+                if (ownerDoc.exists && ownerDoc.data().fcmToken) {
+                    await getMessaging().send({
+                        notification: { title: '🎮 มีคำขอสิทธิ์เล่นเกม!', body: `${requesterName || requester} ขออนุญาตเล่น ${appName}` },
+                        token: ownerDoc.data().fcmToken
+                    }).catch(e => console.log("Push Warning:", e.message));
+                }
+            }
             res.json({ success: true });
         } catch (error) {
             res.status(500).json({ error: 'Play Request failed' });
+        }
+    });
+
+    // 🌟 4.5. อนุมัติ/ปฏิเสธ คำขอเล่นเกม (Play Request Approval)
+    app.post('/api/kindness/play-respond', async (req, res) => {
+        try {
+            const { requestId, status, targetToken, appName } = req.body;
+            await db.collection("play_requests").doc(requestId).set({ status: status }, { merge: true });
+            
+            // 🌟 แจ้งเตือนกลับไปหาเพื่อนที่ส่งคำขอ
+            if (targetToken) {
+                await getMessaging().send({
+                    notification: {
+                        title: status === 'approved' ? '✅ อนุมัติการเล่นเกมแล้ว!' : '❌ คำขอถูกปฏิเสธ',
+                        body: status === 'approved' ? `คุณได้รับสิทธิ์ให้เล่น ${appName} แล้ว เข้าเกมได้เลย!` : `คำขอเล่น ${appName} ของคุณถูกปฏิเสธ`
+                    },
+                    token: targetToken
+                }).catch(e => console.log("Push Warning:", e.message));
+            }
+            res.json({ success: true });
+        } catch (error) {
+            res.status(500).json({ error: 'Play Respond failed' });
         }
     });
 
