@@ -472,6 +472,39 @@ app.delete('/api/apps/:id', async (req, res) => {
         }
     });
 
+    // 🌟 API สำหรับดึงข้อมูลโปรไฟล์นักพัฒนา (ดึงจาก Firestore จริง)
+    app.get('/api/developers/:email', async (req, res) => {
+        try {
+            const email = req.params.email;
+            const doc = await db.collection("developers").doc(email).get();
+            if (doc.exists) {
+                res.json(doc.data());
+            } else {
+                res.status(404).json({ error: 'Developer profile not found' });
+            }
+        } catch (error) {
+            console.error("Fetch Developer Error:", error);
+            res.status(500).json({ error: 'Internal Server Error', details: error.message });
+        }
+    });
+
+    // 🌟 API สำหรับซิงก์โปรไฟล์นักพัฒนา (สร้างหรืออัปเดตชื่อ, ไอคอน, รายละเอียด)
+    app.post('/api/developers/sync', async (req, res) => {
+        try {
+            const { email, ...profileData } = req.body;
+            if (!email) return res.status(400).json({ error: 'Email is required' });
+            await db.collection("developers").doc(email).set({
+                ...profileData,
+                email,
+                lastUpdated: FieldValue.serverTimestamp()
+            }, { merge: true });
+            res.json({ success: true, message: 'Developer profile synced successfully' });
+        } catch (error) {
+            console.error("Sync Developer Error:", error);
+            res.status(500).json({ error: 'Failed to sync developer profile', details: error.message });
+        }
+    });
+
     // 🌟 API สำหรับส่ง Push Notification แบบกำหนดเอง (สำหรับแอดมินพิมพ์ส่งเอง)
     app.post('/api/notifications/send', async (req, res) => {
         try {
