@@ -455,12 +455,13 @@ app.delete('/api/apps/:id', async (req, res) => {
     // 🌟 API สำหรับอัปเดตและซิงก์รูปโปรไฟล์/ชื่อผู้ใช้
     app.post('/api/users/sync', async (req, res) => {
         try {
-            const { email, name, avatar } = req.body;
+            const { email, name, avatar, fcmToken } = req.body;
             if (!email) return res.status(400).json({ error: 'Email is required' });
             
             await db.collection("users").doc(email).set({
                 name,
                 avatar,
+                fcmToken: fcmToken || '',
                 lastActive: FieldValue.serverTimestamp()
             }, { merge: true }); // merge: true จะอัปเดตเฉพาะฟิลด์ที่ส่งมาโดยไม่ลบข้อมูลเก่า
             
@@ -619,6 +620,9 @@ app.delete('/api/apps/:id', async (req, res) => {
                         title: 'มีคำขอโหมดใจดีส่งถึงคุณ 🎁',
                         body: `${fromName || from} ต้องการเพิ่มคุณเป็นเพื่อน!`
                     },
+                    data: { 
+                        type: 'friend_request' 
+                    },
                     token: targetToken
                 }).catch(e => console.log("Push Warning:", e.message));
             }
@@ -701,7 +705,14 @@ app.delete('/api/apps/:id', async (req, res) => {
                 const ownerDoc = await db.collection("users").doc(ownerEmail).get();
                 if (ownerDoc.exists && ownerDoc.data().fcmToken) {
                     await getMessaging().send({
-                        notification: { title: '🎮 มีคำขอสิทธิ์เล่นเกม!', body: `${requesterName || requester} ขออนุญาตเล่น ${appName}` },
+                        notification: { 
+                            title: '🎮 มีคำขอสิทธิ์เล่นเกม!', 
+                            body: `${requesterName || requester} ขออนุญาตเล่น ${appName}` 
+                        },
+                        data: {
+                            type: 'play_request',
+                            appId: String(appId)
+                        },
                         token: ownerDoc.data().fcmToken
                     }).catch(e => console.log("Push Warning:", e.message));
                 }
@@ -724,6 +735,10 @@ app.delete('/api/apps/:id', async (req, res) => {
                     notification: {
                         title: status === 'approved' ? '✅ อนุมัติการเล่นเกมแล้ว!' : '❌ คำขอถูกปฏิเสธ',
                         body: status === 'approved' ? `คุณได้รับสิทธิ์ให้เล่น ${appName} แล้ว เข้าเกมได้เลย!` : `คำขอเล่น ${appName} ของคุณถูกปฏิเสธ`
+                    },
+                    data: {
+                        type: 'play_response',
+                        status: status
                     },
                     token: targetToken
                 }).catch(e => console.log("Push Warning:", e.message));
