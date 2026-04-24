@@ -543,6 +543,12 @@ app.delete('/api/apps/:id', async (req, res) => {
                 const doc = await db.collection("users").doc(id).get();
                 if (doc.exists) {
                     userDoc = { email: doc.id, ...doc.data() };
+                } else {
+                    // 🌟 Fallback: ค้นหาด้วยชื่อ (Developer Name) เพื่อให้แอปดึงไอคอนไปโชว์ได้
+                    const snapshot = await db.collection("users").where("name", "==", id).limit(1).get();
+                    if (!snapshot.empty) {
+                        userDoc = { email: snapshot.docs[0].id, ...snapshot.docs[0].data() };
+                    }
                 }
             }
 
@@ -550,7 +556,8 @@ app.delete('/api/apps/:id', async (req, res) => {
                 return res.json({ 
                     email: userDoc.email, 
                     name: userDoc.name || 'ผู้ใช้งาน', 
-                    token: userDoc.fcmToken || '' 
+                    token: userDoc.fcmToken || '',
+                    avatar: userDoc.avatar || '' // 🌟 ส่งไอคอนกลับไปด้วย
                 });
             }
             res.status(404).json({ error: 'ไม่พบผู้ใช้งานในระบบ' });
