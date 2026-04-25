@@ -4,7 +4,7 @@ const { Server } = require("socket.io");
 const cors = require('cors');
 const multer = require('multer');
 const admin = require('firebase-admin');
-const { S3Client, PutObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { getFirestore, FieldValue } = require('firebase-admin/firestore'); // 🌟 นำเข้า FieldValue เพื่อใช้คำนวณตัวเลขบวกเพิ่ม
 const { getMessaging } = require('firebase-admin/messaging'); // 🌟 นำเข้าระบบยิงแจ้งเตือน Push Notification
@@ -184,6 +184,35 @@ app.post('/api/r2-presigned-url', async (req, res) => {
     } catch (error) {
         console.error('Signature Error:', error);
         res.status(500).json({ error: 'Failed to generate Presigned URL' });
+    }
+});
+
+// 🌟 API สำหรับลบไฟล์ออกจาก Cloudflare R2
+app.delete('/api/files/r2', async (req, res) => {
+    try {
+        const { fileUrl } = req.body;
+        if (!fileUrl) return res.status(400).json({ error: 'fileUrl is required' });
+
+        // แยกเอา Key ออกจาก URL (เช่น https://pub-xxx.r2.dev/filename.apk -> filename.apk)
+        const urlObj = new URL(fileUrl);
+        const publicUrlObj = new URL(R2_PUBLIC_URL);
+        
+        if (urlObj.hostname !== publicUrlObj.hostname) {
+            return res.status(400).json({ error: 'URL does not belong to this R2 storage' });
+        }
+
+        const key = urlObj.pathname.startsWith('/') ? urlObj.pathname.substring(1) : urlObj.pathname;
+
+        const command = new DeleteObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: key,
+        });
+
+        await s3.send(command);
+        res.json({ success: true, message: `File ${key} deleted successfully` });
+    } catch (error) {
+        console.error('R2 Delete Error:', error);
+        res.status(500).json({ error: 'Failed to delete file from R2' });
     }
 });
 
@@ -546,6 +575,35 @@ app.delete('/api/apps/:id', async (req, res) => {
         } catch (error) {
             console.error("Sync Developer Error:", error);
             res.status(500).json({ error: 'Failed to sync developer profile', details: error.message });
+        }
+    });
+
+    // 🌟 API สำหรับจัดการและบันทึกใบอนุญาตการจัดจำหน่าย (Distribution License)
+    app.post('/api/developers/license', async (req, res) => {
+        try {
+            const { email, licenseUrl, licenseName } = req.body;
+            
+            if (!email || !licenseUrl) {
+                return res.status(400).json({ success: false, error: 'ข้อมูลไม่ครบถ้วน (Email และ License URL เป็นสิ่งที่จำเป็น)' });
+            }
+
+            // 🛡️ อัปเดตข้อมูลใบอนุญาตลงใน Document ของนักพัฒนาใน Firestore
+            const devRef = db.collection("developers").doc(email);
+            
+            await devRef.set({
+                distributionLicense: {
+                    url: licenseUrl,
+                    fileName: licenseName || 'license_document.pdf',
+                    uploadedAt: FieldValue.serverTimestamp(),
+                    status: 'pending_verification' // สถานะเริ่มต้นสำหรับการตรวจสอบโดยแอดมิน (pending, approved, rejected)
+                }
+            }, { merge: true });
+
+            console.log(`[License] Received license for developer: ${email}`);
+            res.json({ success: true, message: 'บันทึกข้อมูลใบอนุญาตสำเร็จ เจ้าหน้าที่จะดำเนินการตรวจสอบข้อมูลของคุณ' });
+        } catch (error) {
+            console.error("License Sync Error:", error);
+            res.status(500).json({ success: false, error: 'Internal Server Error', details: error.message });
         }
     });
 
