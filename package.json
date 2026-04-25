@@ -14,12 +14,16 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.893.0",
     "@aws-sdk/s3-request-presigner": "^3.893.0",
+    "amqplib": "^0.10.5",
     "app-info-parser": "^1.1.6",
     "cloudinary": "^2.9.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.1",
     "express": "^5.2.1",
-    "firebase-admin": "^13.8.0",
-    "multer": "^2.1.1"
+    "express-rate-limit": "^7.5.0",
+    "firebase-admin": "^10.1.0",
+    "multer": "^2.1.1",
+    "node-fetch": "^2.7.0",
+    "socket.io": "^4.8.1"
   }
 }
