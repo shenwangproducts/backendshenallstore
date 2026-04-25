@@ -288,9 +288,18 @@ app.post('/api/submit-apk-for-scan', async (req, res) => {
         if (!channel) {
             return res.status(500).json({ error: 'Message queue not connected' });
         }
-        const { apkUrl, originalname, size, declaredIap, appId, uploadContext } = req.body;
-        if (!apkUrl || !appId) {
-            return res.status(400).json({ error: 'APK URL and App ID are required' });
+        let { apkUrl, originalname, size, declaredIap, appId, uploadContext } = req.body;
+        if (!apkUrl) return res.status(400).json({ error: 'APK URL is required' });
+
+        // 🌟 หากเป็นแอปใหม่ (ไม่มี appId) ให้สร้างเอกสารรอไว้ใน Firestore เพื่อเอา ID ก่อนส่งสแกน
+        if (!appId) {
+            const docRef = await db.collection("apps").add({
+                status: 'pending',
+                scanStatus: 'processing',
+                scanLogs: ['[System] เริ่มต้นสร้างเอกสารแอปใหม่...'],
+                timestamp: FieldValue.serverTimestamp()
+            });
+            appId = docRef.id;
         }
 
         const scanJob = {
@@ -307,7 +316,7 @@ app.post('/api/submit-apk-for-scan', async (req, res) => {
         channel.sendToQueue('apk_scan_queue', Buffer.from(JSON.stringify(scanJob)), { persistent: true });
         console.log(`[Main Backend] Sent APK scan job for App ID: ${appId} to queue.`);
 
-        res.json({ success: true, message: 'APK scan job submitted to queue. Status will be updated shortly.' });
+        res.json({ success: true, appId, message: 'APK scan job submitted successfully.' });
     } catch (error) {
         console.error("Error submitting APK scan job:", error);
         res.status(500).json({ error: 'Failed to submit APK scan job', details: error.message });

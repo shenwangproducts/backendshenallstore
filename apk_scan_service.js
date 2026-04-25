@@ -48,13 +48,17 @@ async function startMicroservice() {
     await channel.assertQueue('apk_scan_queue', { durable: true });
     await channel.assertQueue('scan_status_updates', { durable: true });
 
+    // 🌟 ด้วย 32GB RAM และ 8 CPU เราจะยอมให้แต่ละ Worker รับงานหนักได้พร้อมกัน
+    channel.prefetch(2); 
+
     console.log("🛠️ APK Scan Microservice Running...");
 
     channel.consume('apk_scan_queue', async (msg) => {
         const job = JSON.parse(msg.content.toString());
-        const logs = [`[System] รับงานสแกนแอป ID: ${job.appId}`];
+        const logs = [`[System] 🚀 เริ่มต้นรับงานสแกน (ID: ${job.appId})`];
         
         const sendUpdate = (status, progress, extra = {}) => {
+            // 🌟 อัปเดตข้อมูลลง Firestore ทันทีที่สถานะเปลี่ยนเพื่อให้ Polling เห็นข้อมูลไวขึ้น
             channel.sendToQueue('scan_status_updates', Buffer.from(JSON.stringify({
                 appId: job.appId,
                 status,
