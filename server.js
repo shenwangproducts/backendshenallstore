@@ -83,30 +83,47 @@ try {
 }
 
 // 🌟 เชื่อมต่อ RabbitMQ (หรือ Message Queue อื่นๆ)
-let channel;
-async function connectRabbitMQ() {
+let channel, connection;
+async function connectRabbitMQ(retryCount = 0) {
+    const maxRetries = 10;
+    const rabbitUrl = process.env.RABBITMQ_URL || 'amqp://localhost';
+    
     try {
-        const connection = await amqp.connect(process.env.RABBITMQ_URL || 'amqp://localhost');
-        channel = await connection.createChannel();
+        connection = await amqp.connect(rabbitUrl);
         
-        // คิวสำหรับส่งงาน และ คิวสำหรับรับสถานะกลับมา
+        connection.on("error", (err) => {
+            console.error("📡 RabbitMQ Connection Error:", err.message);
+            setTimeout(() => connectRabbitMQ(0), 5000);
+        });
+
+        connection.on("close", () => {
+            console.warn("📡 RabbitMQ Connection Closed. Reconnecting...");
+            setTimeout(() => connectRabbitMQ(0), 5000);
+        });
+
+        channel = await connection.createChannel();
         await channel.assertQueue('apk_scan_queue', { durable: true });
         await channel.assertQueue('scan_status_updates', { durable: true });
 
-        console.log("✅ Connected to RabbitMQ");
+        console.log("✅ Connected to RabbitMQ and Channel created");
 
-        // 🌟 ฟังข้อความจาก Microservice เพื่อส่งต่อผ่าน WebSocket
         channel.consume('scan_status_updates', (msg) => {
             if (msg !== null) {
-                const update = JSON.parse(msg.content.toString());
-                // ส่งข้อมูลให้ Client เฉพาะเครื่องที่เกี่ยวข้อง (ใช้ appId เป็น Room)
-                io.to(update.appId).emit('scan_update', update);
-                channel.ack(msg);
+                try {
+                    const update = JSON.parse(msg.content.toString());
+                    io.to(update.appId).emit('scan_update', update);
+                    channel.ack(msg);
+                } catch (e) {
+                    console.error("Error processing RabbitMQ message:", e);
+                    channel.nack(msg);
+                }
             }
         });
-
     } catch (error) {
-        console.error("❌ Failed to connect to RabbitMQ:", error.message);
+        console.error(`❌ Failed to connect to RabbitMQ (Attempt ${retryCount + 1}/${maxRetries}):`, error.message);
+        if (retryCount < maxRetries) {
+            setTimeout(() => connectRabbitMQ(retryCount + 1), 5000);
+        }
     }
 }
 connectRabbitMQ();
