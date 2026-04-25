@@ -1,4 +1,6 @@
 const express = require('express');
+const http = require('http');
+const { Server } = require("socket.io");
 const cors = require('cors');
 const multer = require('multer');
 const admin = require('firebase-admin');
@@ -17,9 +19,27 @@ const path = require('path');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 require('dotenv').config();
+const amqp = require('amqplib'); // 🌟 เพิ่ม RabbitMQ Client
+
+// 🌟 เพิ่ม Security Library สำหรับระดับ Enterprise
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// 🌟 สร้าง HTTP Server และ WebSocket Server
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: { origin: "*", methods: ["GET", "POST"] }
+});
+
+// 🌟 1. Global Rate Limiter: ป้องกันการใช้งานเกินขีดจำกัด
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 นาที
+    max: 100, // จำกัด 100 request ต่อ 1 IP
+    message: { error: "Too many requests, please try again later." }
+});
+app.use('/api/', limiter);
 
 // อนุญาตให้หน้าเว็บ (Frontend) ยิง API เข้ามาได้
 app.use(cors());
@@ -60,6 +80,46 @@ try {
     console.error("⚠️ FATAL ERROR: ไม่พบข้อมูล Firebase Service Account");
     process.exit(1); // บังคับหยุดการทำงานถ้าไม่มีกุญแจฐานข้อมูล
 }
+
+// 🌟 เชื่อมต่อ RabbitMQ (หรือ Message Queue อื่นๆ)
+let channel;
+async function connectRabbitMQ() {
+    try {
+        const connection = await amqp.connect(process.env.RABBITMQ_URL || 'amqp://localhost');
+        channel = await connection.createChannel();
+        
+        // คิวสำหรับส่งงาน และ คิวสำหรับรับสถานะกลับมา
+        await channel.assertQueue('apk_scan_queue', { durable: true });
+        await channel.assertQueue('scan_status_updates', { durable: true });
+
+        console.log("✅ Connected to RabbitMQ");
+
+        // 🌟 ฟังข้อความจาก Microservice เพื่อส่งต่อผ่าน WebSocket
+        channel.consume('scan_status_updates', (msg) => {
+            if (msg !== null) {
+                const update = JSON.parse(msg.content.toString());
+                // ส่งข้อมูลให้ Client เฉพาะเครื่องที่เกี่ยวข้อง (ใช้ appId เป็น Room)
+                io.to(update.appId).emit('scan_update', update);
+                channel.ack(msg);
+            }
+        });
+
+    } catch (error) {
+        console.error("❌ Failed to connect to RabbitMQ:", error.message);
+    }
+}
+connectRabbitMQ();
+
+// 🌟 WebSocket Connection Logic
+io.on('connection', (socket) => {
+    console.log(`📡 Client connected: ${socket.id}`);
+    
+    // ให้ Client เข้าร่วมห้องตาม App ID เพื่อรับ Update เฉพาะของตัวเอง
+    socket.on('join_scan', (appId) => {
+        socket.join(appId);
+        console.log(`📱 Client ${socket.id} joined room: ${appId}`);
+    });
+});
 
 // ตั้งค่า Multer ให้อ่านไฟล์มาเก็บไว้ใน Memory ชั่วคราว
 const storage = multer.memoryStorage();
@@ -161,111 +221,60 @@ app.post('/api/upload/complete', async (req, res) => {
     }
 });
 
-// 🌟 API 2: สำหรับให้ AI ดาวน์โหลดไฟล์จาก R2 มาสแกน
-app.post('/api/scan-apk', async (req, res) => {
-    let tmpFilePath = null;
+// 🌟 API 2: สำหรับให้ Main Backend ส่งงานสแกน APK ไปยัง Microservice
+app.post('/api/submit-apk-for-scan', async (req, res) => {
     try {
-        const { apkUrl, originalname, size, declaredIap } = req.body;
-        if (!apkUrl) {
-            return res.status(400).json({ error: 'ไม่พบ URL ของไฟล์ APK ที่อัปโหลด' });
+        if (!channel) {
+            return res.status(500).json({ error: 'Message queue not connected' });
+        }
+        const { apkUrl, originalname, size, declaredIap, appId, uploadContext } = req.body;
+        if (!apkUrl || !appId) {
+            return res.status(400).json({ error: 'APK URL and App ID are required' });
         }
 
-        const iapValue = parseInt(declaredIap || 0); // 🌟 รับข้อมูลเปอร์เซ็นต์ที่ผู้ใช้กรอก
-        let logs = [];
-        logs.push(`[System] เริ่มกระบวนการสแกนไฟล์: ${originalname}`);
-        logs.push(`[Download] เซิร์ฟเวอร์กำลังดึงไฟล์จาก Cloud เพื่อตรวจสอบ...`);
+        const scanJob = {
+            apkUrl,
+            originalname,
+            size,
+            declaredIap,
+            appId, 
+            socketId: req.body.socketId, // อ้างอิงเครื่องที่ส่ง
+            uploadContext // 'new' หรือ 'update'
+        };
 
-        // 1. โหลดไฟล์ APK จาก Cloudinary ลงมาสแกนใน Temp Folder
-        tmpFilePath = path.join(os.tmpdir(), Date.now() + '-' + originalname);
-        const response = await fetch(apkUrl);
-        if (!response.ok) throw new Error(`ไม่สามารถโหลดไฟล์ได้: ${response.statusText}`);
-        
-        const fileStream = fs.createWriteStream(tmpFilePath);
-        await pipeline(Readable.fromWeb(response.body), fileStream);
+        // ส่งงานไปยัง Message Queue
+        channel.sendToQueue('apk_scan_queue', Buffer.from(JSON.stringify(scanJob)), { persistent: true });
+        console.log(`[Main Backend] Sent APK scan job for App ID: ${appId} to queue.`);
 
-        logs.push(`[Scan] กำลังแกะไฟล์และวิเคราะห์ AndroidManifest.xml...`);
+        res.json({ success: true, message: 'APK scan job submitted to queue. Status will be updated shortly.' });
+    } catch (error) {
+        console.error("Error submitting APK scan job:", error);
+        res.status(500).json({ error: 'Failed to submit APK scan job', details: error.message });
+    }
+});
 
-        // 2. แกะซอร์สโค้ดเพื่ออ่านข้อมูลของจริง!
-        const parser = new AppInfoParser(tmpFilePath);
-        const appInfo = await parser.parse();
-
-        logs.push(`[Info] Package Name จริง: ${appInfo.package}`);
-        logs.push(`[Info] Version Code: ${appInfo.versionCode}`);
-
-        // 3. ตรวจสอบความปลอดภัยจาก Permission
-        const permissions = appInfo.usesPermissions || [];
-        logs.push(`[Scan] กำลังตรวจสอบสิทธิ์การเข้าถึง ${permissions.length} รายการ...`);
-        
-        const dangerous = ['android.permission.SEND_SMS', 'android.permission.READ_CONTACTS', 'android.permission.READ_CALL_LOG'];
-        permissions.forEach(p => {
-            if (dangerous.includes(p.name)) {
-                logs.push(`[Warning] ตรวจพบสิทธิ์ละเอียดอ่อน: ${p.name}`);
-            }
-        });
-
-        // 🌟 ตรวจสอบระบบเติมเงิน (IAP) ของจริงจาก AndroidManifest
-        logs.push(`[AI Scan] สแกนหา API การชำระเงินและ In-App Billing...`);
-        
-        // รายชื่อ Permission ที่เกี่ยวกับการชำระเงินของสโตร์ต่างๆ (อิงตามหลักการสแกนแอปจริง)
-        const iapPermissions = [
-            'com.android.vending.BILLING', // Google Play
-            'com.sec.android.iap.permission.BILLING', // Samsung
-            'com.amazon.inapp.purchasing.Subscription', // Amazon
-            'org.onepf.openiap.permission.BILLING' // OpenIAP
-        ];
-        
-        const hasBilling = permissions.some(p => iapPermissions.includes(p.name));
-        
-        let finalIapFee = iapValue;
-        let penalty = 0;
-
-        if (hasBilling) {
-            logs.push(`[AI Scan] ⚠️ ตรวจพบสิทธิ์การชำระเงิน (In-App Purchases) จากไฟล์ APK จริง`);
-            
-            if (iapValue < 20) {
-                // คำนวณค่าปรับ 3-9% จากจำนวนสิทธิ์การเข้าถึง (อ้างอิงความซับซ้อนของแอปจริง ไม่ใช้การสุ่ม)
-                penalty = (permissions.length % 7) + 3; 
-                finalIapFee = 20 + penalty;
-                logs.push(`[Alert] 🚨 ตรวจพบการแจ้งข้อมูลไม่ตรงความเป็นจริง! (คุณแจ้ง ${iapValue}% แต่ความจริงคือต้องหัก 20%)`);
-                logs.push(`[Penalty] ระบบทำการปรับเพิ่มค่าปรับการโกหก ${penalty}% รวมหักส่วนแบ่งใหม่ทั้งหมดเป็น ${finalIapFee}% ทันที!`);
-            } else {
-                logs.push(`[Success] ข้อมูลระบบชำระเงินตรงกับที่นักพัฒนาแจ้งไว้`);
-            }
+// 🌟 API สำหรับดึงสถานะการสแกน (Frontend จะเรียก API นี้ซ้ำๆ)
+app.get('/api/apps/:id/scan-status', async (req, res) => {
+    try {
+        const appId = req.params.id;
+        const appDoc = await db.collection("apps").doc(appId).get();
+        if (!appDoc.exists) {
+            return res.status(404).json({ error: 'App not found' });
         }
-
-        logs.push(`[Success] ไม่พบพฤติกรรมมัลแวร์ Shenall Guard อนุมัติ.`);
-
-        // 🌟 4. ระบบคัดแยกไฟล์ (ABI / Architecture Splitter) สำหรับ Universal APK
-        logs.push(`[System] กำลังวิเคราะห์สถาปัตยกรรม (Architecture) ของไฟล์...`);
-        const fileNameLower = originalname.toLowerCase();
-        let abis = ['armeabi-v7a (32-bit)', 'arm64-v8a (64-bit)'];
-        
-        if (fileNameLower.includes('universal') || fileNameLower.includes('emu') || fileNameLower.includes('x86')) {
-            abis.push('x86', 'x86_64 (Emulator)');
-            logs.push(`[Optimize] ตรวจพบแพ็กเกจแบบครอบจักรวาล (Universal / Emulator)`);
-        }
-        
-        logs.push(`[Optimize] สถาปัตยกรรมที่รองรับ: ${abis.join(', ')}`);
-        logs.push(`[Optimize] ระบบกำลังคัดแยกไฟล์และแยกส่วนแพ็กเกจ (Splitting) อัตโนมัติ...`);
-        logs.push(`[Success] สร้างตัวติดตั้งที่เหมาะสมสำหรับอุปกรณ์แต่ละรุ่นสำเร็จ (ป้องกันปัญหาติดตั้งไม่ได้)`);
-
-        // ไม่ต้องอัปโหลดขึ้น Cloudinary อีกรอบแล้วเพราะไฟล์อยู่บนนั้นแล้ว
-        logs.push(`[Success] กระบวนการตรวจสอบเสร็จสมบูรณ์ 100%`);
-
-        fs.unlinkSync(tmpFilePath); // แกะเสร็จแล้วลบไฟล์ชั่วคราวทิ้ง
-        res.json({ 
-            success: true, 
-            logs, 
-            appInfo: { package: appInfo.package, versionName: appInfo.versionName }, 
-            apkUrl: apkUrl, 
-            apkSize: size,
-            finalIapFee,
-            penalty
+        const appData = appDoc.data();
+        res.json({
+            status: appData.scanStatus || 'pending', // เพิ่มฟิลด์ scanStatus ใน Firestore
+            scanLogs: appData.scanLogs || [],
+            appInfo: appData.appInfo || null,
+            finalIapFee: appData.iapFeePercent || null,
+            penalty: appData.penalty || null,
+            apkUrl: appData.apkUrl || null,
+            apkSize: appData.size || null,
+            // ส่งข้อมูลอื่นๆ ที่จำเป็นกลับไปให้ Frontend
         });
     } catch (error) {
-        console.error(error);
-        if (tmpFilePath && fs.existsSync(tmpFilePath)) fs.unlinkSync(tmpFilePath);
-        res.status(500).json({ error: 'Decompile failed: ไฟล์อาจไม่ใช่ APK ที่ถูกต้อง หรือเกิดข้อผิดพลาดในการประมวลผล' });
+        console.error("Error fetching scan status:", error);
+        res.status(500).json({ error: 'Failed to fetch scan status', details: error.message });
     }
 });
 
@@ -849,10 +858,20 @@ app.post('/api/oauth/callback', async (req, res) => {
     }
 });
 
-const server = app.listen(port, () => {
-    console.log(`Backend server running at http://localhost:${port}`);
+// 🌟 2. Centralized Error Handler: ระบบจัดการ Error มาตรฐานโลก
+app.use((err, req, res, next) => {
+    console.error(`[${new Date().toISOString()}] 🚨 ERROR:`, err.stack);
+    
+    res.status(err.status || 500).json({
+        success: false,
+        message: err.message || "Internal Server Error",
+        code: err.code || "SERVER_ERROR"
+    });
 });
 
+server.listen(port, () => {
+    console.log(`Backend server running at http://localhost:${port}`);
+});
 // 🌟 ป้องกันปัญหา Render ตัดการเชื่อมต่อกลางคัน (ERR_CONNECTION_RESET)
 server.keepAliveTimeout = 65000; // ให้รอได้อย่างน้อย 65 วินาที
 server.headersTimeout = 66000;
