@@ -77,8 +77,9 @@ try {
     // 🌟 ชี้เป้าหมายไปที่ฐานข้อมูลชื่อ "store" ที่คุณเพิ่งสร้าง
     db = getFirestore(firebaseApp, "store");
 } catch (error) {
-    console.error("⚠️ FATAL ERROR: ไม่พบข้อมูล Firebase Service Account");
-    process.exit(1); // บังคับหยุดการทำงานถ้าไม่มีกุญแจฐานข้อมูล
+    console.error("⚠️ FATAL ERROR during Firebase initialization:", error.message);
+    // ในระดับ Production เราควรปล่อยให้แอปพังเพื่อให้ Admin รู้ แต่ต้อง Log error ออกมาให้ชัดเจน
+    throw error; 
 }
 
 // 🌟 เชื่อมต่อ RabbitMQ (หรือ Message Queue อื่นๆ)
