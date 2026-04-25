@@ -112,6 +112,14 @@ async function connectRabbitMQ(retryCount = 0) {
                 try {
                     const update = JSON.parse(msg.content.toString());
                     io.to(update.appId).emit('scan_update', update);
+
+                    // 🌟 แจ้งเตือนแอดมินทันทีเมื่อมีแอปสแกนเสร็จสิ้น (รออนุมัติ)
+                    if (update.status === 'completed') {
+                        io.to('admins').emit('admin_notification', { 
+                            message: `ตรวจพบแอปใหม่ที่สแกนสำเร็จ: ${update.appId}`, 
+                            appId: update.appId 
+                        });
+                    }
                     channel.ack(msg);
                 } catch (e) {
                     console.error("Error processing RabbitMQ message:", e);
@@ -136,6 +144,12 @@ io.on('connection', (socket) => {
     socket.on('join_scan', (appId) => {
         socket.join(appId);
         console.log(`📱 Client ${socket.id} joined room: ${appId}`);
+    });
+
+    // 🌟 ให้ Admin เข้าร่วมห้องเพื่อรับการแจ้งเตือนระบบ
+    socket.on('join_admin', () => {
+        socket.join('admins');
+        console.log(`👑 Admin joined notification room: ${socket.id}`);
     });
 });
 
@@ -347,7 +361,10 @@ app.post('/api/apps', async (req, res) => {
 app.put('/api/apps/:id', async (req, res) => {
     try {
         const appId = req.params.id;
-        const updateData = req.body;
+        let updateData = { ...req.body };
+        
+        // 🛡️ ป้องกัน Error: ไม่สามารถอัปเดตฟิลด์ ID ของ Document ได้
+        delete updateData.id;
 
         // 🌟 ตรวจสอบว่าเป็นการอัปเดตไฟล์ APK หรือไม่
         if (updateData.apkUrl) {

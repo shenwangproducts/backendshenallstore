@@ -15,10 +15,11 @@ try {
         JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT) : 
         require('./serviceAccountKey.json');
     
-    if (!admin.apps.length) {
-        const app = admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-        db = getFirestore(app, "store");
-    }
+    const app = admin.apps.length === 0 
+        ? admin.initializeApp({ credential: admin.credential.cert(serviceAccount) })
+        : admin.apps[0];
+        
+    db = getFirestore(app, "store");
 } catch (e) {
     console.error("❌ Firebase Init Error in Microservice:", e.message);
 }
@@ -95,16 +96,17 @@ async function startMicroservice() {
             }
 
             // 🌟 3. อัปเดตข้อมูลลง Firestore ทันที
-            await db.collection("apps").doc(job.appId).update({
+            // 🛡️ ใช้ set + merge แทน update เพื่อป้องกัน Error หากหา Document ไม่เจอในจังหวะนั้น
+            await db.collection("apps").doc(job.appId).set({
                 scanStatus: 'completed',
                 scanLogs: logs,
                 package: appInfo.package,
                 version: appInfo.versionName,
                 iapFeePercent: finalIapFee,
                 penalty: penalty,
-                size: (job.size / (1024 * 1024)).toFixed(1) + " MB",
+                size: job.size ? (job.size / (1024 * 1024)).toFixed(1) + " MB" : "0 MB",
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
-            });
+            }, { merge: true });
 
             logs.push(`[Success] ตรวจสอบเสร็จสิ้น ไม่พบมัลแวร์ ข้อมูลถูกบันทึกแล้ว`);
             sendUpdate('completed', 100, { 
