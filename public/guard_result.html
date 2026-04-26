@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SHENALL GUARD AI - Result</title>
+    <style>
+        :root {
+            --primary-color: #3498db;
+            --safe-color: #2ecc71;
+            --warning-color: #f1c40f;
+            --danger-color: #e74c3c;
+            --special-color: #9b59b6; /* สีม่วงสำหรับโหมดพิเศษ */
+            --dark-bg: #2c3e50;
+        }
+
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; display: flex; justify-content: center; padding: 20px; }
+        .result-card { background: white; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); width: 100%; max-width: 500px; padding: 30px; text-align: center; position: relative; overflow: hidden; }
+        
+        /* Header Mode Switcher */
+        .mode-selector { margin-bottom: 20px; display: flex; justify-content: center; gap: 10px; }
+        .mode-btn { border: 1px solid #ddd; padding: 5px 12px; border-radius: 15px; font-size: 0.8em; cursor: pointer; transition: 0.3s; }
+        .mode-btn.active { background: var(--primary-color); color: white; border-color: var(--primary-color); }
+
+        /* Risk Meter (Gauge) */
+        .meter-container { position: relative; width: 200px; height: 100px; margin: 0 auto 20px; overflow: hidden; }
+        .meter-bg { position: absolute; width: 200px; height: 200px; border-radius: 50%; background: #eee; clip-path: inset(0 0 50% 0); }
+        .meter-fill { position: absolute; width: 200px; height: 200px; border-radius: 50%; clip-path: inset(0 0 50% 0); transition: transform 1s ease-out; transform-origin: center center; }
+        .meter-value { position: absolute; bottom: 0; left: 0; right: 0; font-size: 24px; font-weight: bold; }
+
+        /* Scan Certificate */
+        .certificate { border: 2px dashed #3498db; background: #ebf5fb; padding: 10px; border-radius: 10px; margin: 20px 0; }
+        .cert-id { font-family: 'Courier New', Courier, monospace; font-weight: bold; color: #2980b9; font-size: 1.2em; }
+
+        /* Logic Trace */
+        .logic-trace { text-align: left; background: #2c3e50; color: #ecf0f1; padding: 15px; border-radius: 8px; font-size: 0.9em; }
+        .trace-item { margin-bottom: 5px; border-bottom: 1px solid #34495e; padding-bottom: 5px; }
+        .trace-label { color: #bdc3c7; }
+
+        .status-badge { display: inline-block; padding: 5px 15px; border-radius: 20px; color: white; font-weight: bold; margin-bottom: 10px; }
+
+        /* Attribution Style */
+        .attribution { position: absolute; bottom: 8px; right: 15px; font-size: 0.7em; color: #aaa; font-style: italic; pointer-events: none; }
+
+        /* Loading State */
+        .result-card.loading { opacity: 0.6; pointer-events: none; }
+        .result-card.loading::after {
+            content: "🔄 System Scanning...";
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-weight: bold; color: var(--primary-color);
+            background: rgba(255,255,255,0.9); padding: 10px 20px; border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="result-card">
+    <h2 style="margin-bottom: 5px;">SHENALL GUARD AI</h2>
+    <p style="color: #666; font-size: 0.9em; margin-bottom: 25px;">ระบบสแกนความปลอดภัยอัจฉริยะ</p>
+
+    <!-- Risk Meter -->
+    <div class="meter-container">
+        <div class="meter-bg"></div>
+        <div id="riskFill" class="meter-fill" style="transform: rotate(0deg); background: #2ecc71;"></div>
+        <div class="meter-value" id="riskScore">0%</div>
+    </div>
+    <div id="statusBadge" class="status-badge" style="background: #2ecc71;">SAFE</div>
+
+    <!-- Scan Certificate -->
+    <div class="certificate">
+        <div style="font-size: 0.8em; color: #555;">SCAN CERTIFICATE</div>
+        <div class="cert-id" id="scanId">SHENALL_WAITING</div>
+    </div>
+
+    <!-- Logic Trace -->
+    <div class="logic-trace">
+        <div style="font-weight: bold; margin-bottom: 10px; color: #3498db;">🔍 Logic Trace (การวิเคราะห์)</div>
+        <div id="traceContent">
+            <div class="trace-item"><span class="trace-label">กฎที่ใช้:</span> กำลังรอข้อมูล...</div>
+        </div>
+    </div>
+
+    <!-- ส่วนอัปโหลดไฟล์จริง -->
+    <div style="margin-top: 20px;">
+        <input type="file" id="fileInput" style="display: none;" onchange="handleFileUpload(this.files)">
+        <button onclick="document.getElementById('fileInput').click()" 
+                style="background: #3498db; color: white; border: none; padding: 12px 25px; border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%;">
+            📤 เลือกไฟล์เพื่อสแกน (APK/JS/XML)
+        </button>
+    </div>
+
+    <button onclick="mockScanResult()" style="margin-top: 20px; padding: 10px 20px; cursor: pointer;">ทดสอบจำลองผลสแกน</button>
+
+    <!-- Attribution -->
+    <div class="attribution">Power By Shenwang Ent.</div>
+</div>
+
+<script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const DYNAMIC_API_URL = urlParams.get('api') || '/api/Coordinator/shenall';
+    let currentMode = 'billing';
+
+    function updateUI(data) {
+        const { threat_score, scan_id, status, rules_applied, message } = data;
+        
+        // 1. Update Risk Meter
+        // 0-100 score -> 0-180 degrees rotation
+        const rotation = (threat_score / 100) * 180;
+        const fill = document.getElementById('riskFill');
+        fill.style.transform = `rotate(${rotation}deg)`;
+        document.getElementById('riskScore').innerText = `${threat_score}%`;
+
+        // Change color based on score
+        let color = '#2ecc71'; // Green
+        let statusText = 'SAFE';
+        if (threat_score > 30) { color = '#f1c40f'; statusText = 'WARNING'; }
+        if (threat_score > 70) { color = '#e74c3c'; statusText = 'DANGER'; }
+        
+        fill.style.background = color;
+        document.getElementById('statusBadge').style.background = color;
+        document.getElementById('statusBadge').innerText = statusText;
+
+        // 2. Update Scan Certificate
+        document.getElementById('scanId').innerText = scan_id;
+
+        // 3. Update Logic Trace
+        const trace = document.getElementById('traceContent');
+        trace.innerHTML = `
+            <div class="trace-item"><span class="trace-label">วงเงินกำหนด:</span> ${rules_applied.limit}</div>
+            <div class="trace-item"><span class="trace-label">อัตราหัก (Penalty):</span> ${rules_applied.penalty * 100}%</div>
+            <div class="trace-item"><span class="trace-label">โหมดการสแกน:</span> ${rules_applied.mode}</div>
+            <div class="trace-item" style="border:none; color:#f1c40f; margin-top:10px;">${message}</div>
+        `;
+    }
+
+    async function handleFileUpload(files) {
+        if (files.length === 0) return;
+
+        const card = document.querySelector('.result-card');
+        card.classList.add('loading');
+
+        const formData = new FormData();
+        formData.append('file', files[0]);
+        formData.append('scanMode', currentMode); // ส่งโหมดไปให้หลังบ้านด้วย
+
+        try {
+            const response = await fetch(DYNAMIC_API_URL, {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            
+            if (data.coordinator_status === "success") {
+                updateUI(data.result);
+            } else {
+                alert("เกิดข้อผิดพลาดในการสแกน: " + (data.error || "โปรดตรวจสอบไฟล์ของคุณ"));
+            }
+        } catch (error) {
+            console.error("Error:", error);
+            alert("ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ Guard AI ได้");
+        } finally {
+            card.classList.remove('loading');
+        }
+    }
+
+    function exportAsImage() {
+        const elementsToHide = document.querySelectorAll('.no-export');
+        elementsToHide.forEach(el => el.style.display = 'none');
+
+        html2canvas(document.getElementById('captureArea')).then(canvas => {
+            const link = document.createElement('a');
+            link.download = `ShenAll_Guard_${new Date().getTime()}.png`;
+            link.href = canvas.toDataURL();
+            link.click();
+            elementsToHide.forEach(el => el.style.display = '');
+        });
+    }
+
+    // ฟังก์ชันจำลองเมื่อได้รับ Data จาก API /api/Coordinator/shenall
+    function mockScanResult() {
+        const mockData = {
+            status: "flagged",
+            threat_score: 85,
+            scan_id: "SHENALL_A9B2C8",
+            message: "🚨 ตรวจพบการเรียกเก็บเงินผิดปกติ (2500)!",
+            rules_applied: {
+                limit: 2000,
+                penalty: 0.15,
+                mode: "normal"
+            }
+        };
+        updateUI(mockData);
+    }
+</script>
+
+</body>
+</html>

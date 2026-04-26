@@ -1,21 +1,22 @@
 const express = require('express');
+const app = express();
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const multer = require('multer');
+const os = require('os');
 const http = require('http');
 const { Server } = require("socket.io");
 const cors = require('cors');
-const multer = require('multer');
 const admin = require('firebase-admin');
 const { S3Client, PutObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { getFirestore, FieldValue } = require('firebase-admin/firestore'); // 🌟 นำเข้า FieldValue เพื่อใช้คำนวณตัวเลขบวกเพิ่ม
 const { getMessaging } = require('firebase-admin/messaging'); // 🌟 นำเข้าระบบยิงแจ้งเตือน Push Notification
-const os = require('os');
-const fs = require('fs');
 const { exec } = require('child_process');
-const crypto = require('crypto'); // 🌟 นำเข้า module เข้ารหัสสำหรับสร้าง Store ID ที่ปลอดภัยและคงที่
 const util = require('util');
 const execPromise = util.promisify(exec);
 const AppInfoParser = require('app-info-parser');
-const path = require('path');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 require('dotenv').config();
@@ -24,7 +25,6 @@ const amqp = require('amqplib'); // 🌟 เพิ่ม RabbitMQ Client
 // 🌟 เพิ่ม Security Library สำหรับระดับ Enterprise
 const rateLimit = require('express-rate-limit');
 
-const app = express();
 const port = process.env.PORT || 3000;
 
 // 🌟 สร้าง HTTP Server และ WebSocket Server
@@ -44,6 +44,14 @@ app.use('/api/', limiter);
 // อนุญาตให้หน้าเว็บ (Frontend) ยิง API เข้ามาได้
 app.use(cors());
 app.use(express.json());
+
+// 🌟 ตั้งค่า Static Folder เพื่อให้เซิร์ฟเวอร์ส่งไฟล์จากโฟลเดอร์ public ได้
+app.use(express.static(path.join(__dirname, 'public')));
+
+// 🌟 Route สำหรับเปิดหน้า Dashboard ของ Guard AI
+app.get('/guard-dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'guard_result.html'));
+});
 
 // 🌟 ตั้งค่า Cloudflare R2
 const s3 = new S3Client({
@@ -156,13 +164,6 @@ io.on('connection', (socket) => {
 // ตั้งค่า Multer ให้อ่านไฟล์มาเก็บไว้ใน Memory ชั่วคราว
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
-
-// 🌟 ตั้งค่า Multer ให้บันทึกลง Disk ชั่วคราว (สำหรับไฟล์ APK เพราะไฟล์อาจมีขนาดใหญ่)
-const diskStorage = multer.diskStorage({
-    destination: function (req, file, cb) { cb(null, os.tmpdir()) },
-    filename: function (req, file, cb) { cb(null, Date.now() + '-' + file.originalname) }
-});
-const uploadDisk = multer({ storage: diskStorage });
 
 // 🌟 API 1: ออกใบอนุญาต (Presigned URL) ให้หน้าเว็บอัปโหลดไฟล์ตรงไปที่ Cloudflare R2
 app.post('/api/r2-presigned-url', async (req, res) => {
@@ -971,9 +972,120 @@ app.use((err, req, res, next) => {
     });
 });
 
-server.listen(port, () => {
-    console.log(`Backend server running at http://localhost:${port}`);
+// 🌟 ============================================================ 🌟
+// 🌟 SHENALL GUARD AI SYSTEM - CONSOLIDATED MODULE (Plug-and-Play) 🌟
+// 🌟 ============================================================ 🌟
+
+/**
+ * ส่วนที่ 1: การตั้งค่าโครงสร้างและ Multer พิเศษสำหรับ Guard AI
+ * (ใช้ชื่อตัวแปรเฉพาะเพื่อไม่ให้ทับกับระบบเดิม)
+ */
+const SHENALL_GUARD_CONFIG = {
+    paths: {
+        uploads: path.join(os.tmpdir(), 'guard_uploads'), // ใช้ os.tmpdir เพื่อความปลอดภัยบน Cloud
+        configDir: path.join(process.cwd(), 'power', 'by', 'shenent'),
+        configFile: path.join(process.cwd(), 'power', 'by', 'shenent', 'shentaxt.js')
+    }
+};
+
+// สร้างโฟลเดอร์อัตโนมัติ
+[SHENALL_GUARD_CONFIG.paths.uploads, SHENALL_GUARD_CONFIG.paths.configDir].forEach(dir => {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
-// 🌟 ป้องกันปัญหา Render ตัดการเชื่อมต่อกลางคัน (ERR_CONNECTION_RESET)
-server.keepAliveTimeout = 65000; // ให้รอได้อย่างน้อย 65 วินาที
+if (!fs.existsSync(SHENALL_GUARD_CONFIG.paths.configFile)) {
+    fs.writeFileSync(SHENALL_GUARD_CONFIG.paths.configFile, "// ShenAll Guard AI Default Config\n// limit: 2000", 'utf8');
+}
+
+const guardMulter = multer({
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, SHENALL_GUARD_CONFIG.paths.uploads),
+        filename: (req, file, cb) => cb(null, `guard-${Date.now()}-${file.originalname}`)
+    })
+});
+
+/**
+ * ส่วนที่ 2: Helper Functions (Parser & Scanner Engine)
+ */
+async function guard_fetchConfig() {
+    return await fs.promises.readFile(SHENALL_GUARD_CONFIG.paths.configFile, 'utf8');
+}
+
+function guard_parseRules(text) {
+    const rules = { limit: 2000, penalty: 0.0, mode: 'normal' };
+    const lMatch = text.match(/(?:limit|วงเงิน|ไม่เกิน)\s*[:=]?\s*(\d+)/i);
+    const pMatch = text.match(/(?:penalty|หัก|ส่วนแบ่ง|%)\s*[:=]?\s*(\d+)/i);
+    if (lMatch) rules.limit = parseInt(lMatch[1]);
+    if (pMatch) rules.penalty = parseInt(pMatch[1]) / 100;
+    if (text.match(/(all function|ทุกฟังก์ชัน)/i)) rules.mode = 'all';
+    return rules;
+}
+
+async function guard_runEngine(filePath, rules) {
+    const content = await fs.promises.readFile(filePath, 'utf8');
+    const scanId = `GUARD_${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+    const bMatch = content.match(/(?:billing|amount|price|cost)[^\d]*(\d+)/i);
+    const bValue = bMatch ? parseInt(bMatch[1]) : 0;
+
+    let result = {
+        status: bValue > rules.limit ? 'flagged' : 'checked',
+        threat_score: bValue > rules.limit ? Math.min(100, 70 + (rules.penalty * 100)) : 0,
+        scan_id: scanId,
+        message: bValue > rules.limit 
+            ? `🚨 พบการเรียกเก็บเงินเกินกำหนด (${bValue} > ${rules.limit})` 
+            : `✅ ตรวจสอบแล้ว: ไม่พบความเสี่ยง (${bValue})`
+    };
+
+    console.log(`[ShenAll Guard AI] Scan ID: ${scanId} - Status: ${result.status.toUpperCase()}`);
+    return { ...result, rules_applied: rules };
+}
+
+/**
+ * ส่วนที่ 3: API Endpoints
+ */
+
+// API: ดูค่าคอนฟิกปัจจุบัน
+app.post('/api/reques/shenall', async (req, res) => {
+    try {
+        const config = await guard_fetchConfig();
+        res.json({ success: true, config });
+    } catch (e) { res.status(500).json({ error: "Config Read Error" }); }
+});
+
+// API: Scanner Engine (สำหรับเรียกใช้ตรงๆ)
+app.post('/api/aiscan/shenall', guardMulter.single('file'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "No file provided" });
+        const rules = guard_parseRules(await guard_fetchConfig());
+        const result = await guard_runEngine(req.file.path, rules);
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        res.json(result);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// API: Orchestrator (ประสานงานการสแกนและ Config)
+app.post('/api/Coordinator/shenall', guardMulter.single('file'), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ error: "กรุณาอัปโหลดไฟล์ที่ต้องการตรวจสอบ" });
+        const configText = await guard_fetchConfig();
+        const rules = guard_parseRules(configText);
+        const scanResult = await guard_runEngine(req.file.path, rules);
+        
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        res.json({ coordinator_status: "success", result: scanResult });
+    } catch (e) { res.status(500).json({ error: "ระบบประสานงานขัดข้อง" }); }
+});
+
+console.log("🚀 [ShenAll Guard AI] System is Ready and Modularized");
+
+// 🌟 ========================================== 🌟
+// 🌟 FINAL SERVER STARTUP (ท้ายสุดของไฟล์)       🌟
+// 🌟 ========================================== 🌟
+
+server.listen(port, () => {
+    console.log(`✅ [Main System] Server is running on port ${port}`);
+    console.log(`🛡️ [Guard AI] Endpoints registered and ready.`);
+});
+
+// 🌟 ป้องกันปัญหา Render ตัดการเชื่อมต่อกลางคัน
+server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
